@@ -1,0 +1,16 @@
+cython
+numpy>=1.13.3
+sympy
+prettytable
+pytest>=3.8.0
+matplotlib
+assimulo
+pandas
+numexpr
+mpmath
+PyGMO
+scipy>=1.1.0
+sphinx_rtd_theme
+thermo
+numba
+pyneqsys
