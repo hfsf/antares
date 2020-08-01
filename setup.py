@@ -8,7 +8,6 @@ import io
 import os
 import sys
 from shutil import rmtree
-
 from setuptools import find_packages, setup, Command
 
 #ipython ipython3 cython cython3 libblas-common libblas3 liblapack3 liblapack-dev libsundials-ida2 libsundials-idas0 libsundials-serial libsundials-serial-dev"
