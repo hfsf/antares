@@ -26,9 +26,6 @@ This software is not mature yeat to receive contributions. Please, wait until al
 
 For further questions, suggestions and collaborations contact me through: <hanniel.freitas@ifrn.edu.br>.
 
-.. |travisci| image:: https://travis-ci.com/hfsf/antares.svg?branch=master
-    :target: https://travis-ci.com/hfsf/antares
-
 <!---
 .. |cantera| image:: https://cantera.org/assets/img/cantera-logo.png
     :target: https://cantera.org
