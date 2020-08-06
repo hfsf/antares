@@ -1,7 +1,7 @@
 # ANTARES - v.0.0a  
 ###### (Derived from SLOTH project)
 
-![antares_logo](https://github.com/hfsf/antares/blob/master/antares_logo.png?raw=true)
+![antares_logo](https://github.com/hfsf/antares/blob/master/docs/antares_logo.png?raw=true)
 
 
 ![version](https://img.shields.io/badge/version-0.0a-orange?style=for-the-badge)
