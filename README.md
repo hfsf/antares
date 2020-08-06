@@ -1,6 +1,9 @@
 # ANTARES - v.0.0a  
 ###### (Derived from SLOTH project)
 
+![antares_logo](https://github.com/hfsf/antares/blob/master/antares_logo.png?raw=true)
+
+
 ![version](https://img.shields.io/badge/version-0.0a-orange?style=for-the-badge)
 ![python](https://img.shields.io/badge/python-3.8--3.7-blue?style=for-the-badge)
 [![License: GPL](https://img.shields.io/badge/License-GPL-blue.svg?style=for-the-badge)](https://opensource.org/licenses/GPL)
