@@ -1,7 +1,7 @@
 # *coding:utf-8*
 
 """
-Defines overloaded operators for basic mathematical operations over unit-containing members (Constant, Parameter, Variables)
+Defines Exceptions for usage in Antares
 """
 
 class ExposedVariableError(Exception):
@@ -34,7 +34,6 @@ class UnexpectedObjectDeclarationError(Exception):
         msg = "Unexpected object declaration error. \n The following objects were used: %s \n But the following objects were declared for the current model. \n %s" % (self.objects, self.declared_objects)
         return(msg)
 
-
 class AbsentRequiredObjectError(Exception):
 
     """
@@ -50,7 +49,6 @@ class AbsentRequiredObjectError(Exception):
         if self.supplied_object is not "":
             msg += " Supplied object was: %s" % (self.supplied_object)
         return(msg)
-
 
 class UnexpectedValueError(Exception):
 
@@ -93,8 +91,6 @@ class NumericalError(Exception):
         else:
             err_msg = self.msg
         return(err_msg)
-
-
 
 class NonDimensionalArgumentError(Exception):
 

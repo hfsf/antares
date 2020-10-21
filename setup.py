@@ -13,17 +13,34 @@ from setuptools import find_packages, setup, Command
 #ipython ipython3 cython cython3 libblas-common libblas3 liblapack3 liblapack-dev libsundials-ida2 libsundials-idas0 libsundials-serial libsundials-serial-dev"
 
 # Package meta-data.
-NAME = 'sloth'
+NAME = 'antares'
 DESCRIPTION = 'Humble and umpretentious equation oriented process simulation tool'
-URL = 'https://github.com/hfsf/sloth'
+URL = 'https://github.com/hfsf/antares'
 EMAIL = 'freitas.hfs@gmail.com'
 AUTHOR = 'Hanniel Freitas'
-REQUIRES_PYTHON = '>=3.6'  # Put your required Python version
-VERSION = '0.3'  # Put the package version as a string (ex.: '1.0.0')
+REQUIRES_PYTHON = '>=3.7'  # Put your required Python version
+VERSION = '0.0'  # Put the package version as a string (ex.: '1.0.0')
 
 # What packages are required for this module to be executed?
 REQUIRED = [
-    'numpy', 'pytest', 'numpydoc', 'sympy', 'cython>0.18', 'prettytable','numexpr', 'mpmath', 'scipy', 'pandas', 'matplotlib', 'assimulo', 'pygmo>=2.7', 'thermo', 'pygraphviz',  'numba', 'pyneqsys'
+    'numpy', 
+    'pytest', 
+    'numpydoc', 
+    'sympy', 
+    'cython>0.18', 
+    'prettytable',
+    'numexpr', 
+    'mpmath', 
+    'scipy', 
+    'pandas', 
+    'matplotlib', 
+    'assimulo', 
+    'pygmo>=2.7', 
+    'thermo', 
+    'pygraphviz',  
+    'numba', 
+    'pyneqsys',
+    'diffeqpy'
 ]
 
 # What packages are optional?
