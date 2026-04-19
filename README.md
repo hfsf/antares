@@ -1,52 +1,50 @@
-# ANTARES - v.0.1.5a
+# ANTARES
 
 ###### (Derived from SLOTH project)
 
-![antares_logo](https://github.com/hfsf/antares/blob/master/docs/antares_logo.png?raw=true)
+![antares_logo](https://github.com/hfsf/antares/blob/main/docs/antares_logo.png?raw=true)
 
-![version](https://img.shields.io/badge/version-0.0a-orange?style=for-the-badge)
-![python](https://img.shields.io/badge/python-3.8--3.7-blue?style=for-the-badge)
+![version](https://img.shields.io/badge/version-0.1.5a-orange?style=for-the-badge)
+![python](https://img.shields.io/badge/python-3.10%2B-blue?style=for-the-badge)
 [![License: GPL](https://img.shields.io/badge/License-GPL-blue.svg?style=for-the-badge)](https://opensource.org/licenses/GPL)
-[![Build Status](https://travis-ci.com/hfsf/antares.svg?style=for-the-badge&branch=master)](https://travis-ci.com/hfsf/antares)
+<!-- Placeholder for CI/CD and Docs badges
+[![Build Status](https://img.shields.io/travis/com/hfsf/antares/main?style=for-the-badge)](https://travis-ci.com/hfsf/antares)
 [![Documentation Status](https://readthedocs.org/projects/antares/badge/?style=for-the-badge&version=latest)](https://antares.readthedocs.io/en/latest/?badge=latest)
 [![DOI](https://zenodo.org/badge/00000.svg)](https://zenodo.org/badge/latestdoi/00000)
+-->
 
-## ANTARES aims to:
+## What is ANTARES?
 
-- **Bridge the gap between usability and performance:** Combine the intuitive, object-oriented modeling syntax of **Python/SymPy** (for equation declaration) with the numerical robustness and speed of **CasADi** (for graph-based optimization and JIT compilation).
-- **Enable rapid prototyping of Digital Twins:** Allow researchers to move from mathematical formulation to **Dynamic Real-Time Optimization (DRTO)** and **Nonlinear Model Predictive Control (NMPC)** in a few lines of code, bypassing the complexity of industrial suites.
-- **Provide a specialized framework for Bioprocesses:** Focus on the specific challenges of biochemical engineering—such as hybrid modeling (AI + First Principles), nonlinear kinetics, and oscillatory regimes—where traditional steady-state simulators fall short.
-- **Delegate, don't reinvent:** Focus on solving dynamic Differential-Algebraic Equations (DAE) efficiently, while seamlessly delegating rigorous property calculations to specialized external libraries (e.g., **Cantera**, **Thermo**) when necessary.
+**ANTARES** is an evolving computational framework designed to solve complex dynamic models and Differential-Algebraic Equations (DAE). Its primary goal is to provide a flexible and highly expressive environment where researchers and engineers can translate phenomenological concepts into high-performance numerical simulations.
 
-### Key Features
+Rather than being a rigid, domain-specific simulator, ANTARES acts as a mathematical bridge between high-level, human-readable declarations (via Python/SymPy) and robust, low-level execution engines (like CasADi).
 
-- **Equation-Oriented Modeling:** Write mass and energy balances naturally using Python objects.
-- **Automatic Differentiation (AD):** Leverages CasADi's algorithmic differentiation to provide exact Jacobians and Hessians, ensuring convergence in stiff and unstable systems (e.g., continuous fermentation with bifurcations).
-- **High-Performance Backend:** Automatically transpiles high-level Python models into C-code via CasADi for blazing-fast execution.
-- **Optimization-Ready:** Native support for parameter estimation, optimal control, and sensitivity analysis without redefining the model.
+### Core Philosophy
 
-## Warning!
+- **Expressive yet Fast:** Combine intuitive, object-oriented modeling syntax with the speed of graph-based optimization and JIT C++ compilation.
+- **Adaptable to Complexity:** Built to handle the specific challenges of advanced engineering—such as stiff systems, highly nonlinear kinetics, and complex boundary conditions.
+- **Delegate Physical Properties:** Focus purely on mathematical resolution and optimization, seamlessly delegating thermodynamic and physical property calculations to specialized external libraries (e.g., *Cantera*, *Thermo*).
 
-This software is not mature yeat to receive contributions. Please, wait until all the core functionalities are up and running
+### Key Features (Current)
+
+- **Equation-Oriented Modeling:** Declare variables, domains, and mass/energy balances naturally using Python objects.
+- **Flexible Discretization:** Native support for translating PDEs into algebraic or differential systems using the **Method of Lines (MOL)** or **Orthogonal Collocation**.
+- **Automatic Differentiation (AD):** Exact Jacobians and Hessians provided natively through the CasADi backend, ensuring solver convergence.
+- **Symbolic Transpilation:** Automatically converts Python-based Abstract Syntax Trees (AST) into optimized computational graphs.
+
+### Roadmap & Future Horizons
+
+ANTARES is being architected from the ground up to support advanced methodologies. Upcoming capabilities include:
+- **Hybrid Modeling (Physics + ML):** Native integration with Machine Learning frameworks (such as **Keras/TensorFlow**) to solve PDEs and enhance phenomenological models using data-driven approaches.
+- **Advanced Optimization Suite:** Built-in wrappers and routines for Dynamic Real-Time Optimization (DRTO), Nonlinear Model Predictive Control (NMPC), and automated parameter estimation.
+- **Multidimensional Domains:** Expanding spatial discretization and tensor operations to natively support 2D and 3D modeling scenarios.
+
+## Current Status
+
+⚠️ **Alpha Version (v0.1.5a)**
+
+ANTARES is currently in its core architectural development phase. The codebase is fluid, and the API is subject to change as we lay the groundwork for the future features mentioned above. The project is not yet mature enough for external contributions.
 
 ## Contact
 
-For further questions, suggestions and collaborations contact me through: <hanniel.freitas@ifrn.edu.br>.
-
-<!---
-.. |cantera| image:: https://cantera.org/assets/img/cantera-logo.png
-    :target: https://cantera.org
-    :alt: cantera logo
-    :width: 675px
-    :align: middle
-
-.. |doi| image:: https://zenodo.org/badge/DOI/10.5281/zenodo.170284.svg
-   :target: https://doi.org/10.5281/zenodo.1174508
-
-.. |codecov| image:: https://img.shields.io/codecov/c/github/Cantera/cantera/master.svg
-   :target: https://codecov.io/gh/Cantera/cantera?branch=master
-
-.. |release| image:: https://img.shields.io/github/release/cantera/cantera.svg
-   :target: https://github.com/Cantera/cantera/releases
-   :alt: GitHub release
---->
+For architectural discussions, ideas, or collaborations, please contact: **[hanniel.freitas@ifrn.edu.br](mailto:hanniel.freitas@ifrn.edu.br)**.

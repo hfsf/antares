@@ -4,6 +4,7 @@
 
 #VSCode 
 *.workspace
+*.code-workspace
 
 #Art
 /logo_ascii
