@@ -1,8 +1,8 @@
-# ANTARES - v.0.0a  
+# ANTARES - v.0.1.5a
+
 ###### (Derived from SLOTH project)
 
 ![antares_logo](https://github.com/hfsf/antares/blob/master/docs/antares_logo.png?raw=true)
-
 
 ![version](https://img.shields.io/badge/version-0.0a-orange?style=for-the-badge)
 ![python](https://img.shields.io/badge/python-3.8--3.7-blue?style=for-the-badge)
@@ -13,17 +13,21 @@
 
 ## ANTARES aims to:
 
-* Use the robust unit operation library CANTERA to provide PSE (Process System Engineering) tools for process simulation and optimization
-* Transparently represent the inner working mechanisms of the tool:
-* Integrate with robust packages for the main parts of the workflow of the tool
-  - CANTERA for unit operation and thermodynamical calculations, simulations, etc
-  - PYGMO/PAGMO for optimization 
-  - SYMPY/SYMENGINE for symbolic computation of the model equations
-  - (...)
+- **Bridge the gap between usability and performance:** Combine the intuitive, object-oriented modeling syntax of **Python/SymPy** (for equation declaration) with the numerical robustness and speed of **CasADi** (for graph-based optimization and JIT compilation).
+- **Enable rapid prototyping of Digital Twins:** Allow researchers to move from mathematical formulation to **Dynamic Real-Time Optimization (DRTO)** and **Nonlinear Model Predictive Control (NMPC)** in a few lines of code, bypassing the complexity of industrial suites.
+- **Provide a specialized framework for Bioprocesses:** Focus on the specific challenges of biochemical engineering—such as hybrid modeling (AI + First Principles), nonlinear kinetics, and oscillatory regimes—where traditional steady-state simulators fall short.
+- **Delegate, don't reinvent:** Focus on solving dynamic Differential-Algebraic Equations (DAE) efficiently, while seamlessly delegating rigorous property calculations to specialized external libraries (e.g., **Cantera**, **Thermo**) when necessary.
+
+### Key Features
+
+- **Equation-Oriented Modeling:** Write mass and energy balances naturally using Python objects.
+- **Automatic Differentiation (AD):** Leverages CasADi's algorithmic differentiation to provide exact Jacobians and Hessians, ensuring convergence in stiff and unstable systems (e.g., continuous fermentation with bifurcations).
+- **High-Performance Backend:** Automatically transpiles high-level Python models into C-code via CasADi for blazing-fast execution.
+- **Optimization-Ready:** Native support for parameter estimation, optimal control, and sensitivity analysis without redefining the model.
 
 ## Warning!
 
-This software is not mature yeat to receive contributions. Please, wait until all the core functionalities are up and running 
+This software is not mature yeat to receive contributions. Please, wait until all the core functionalities are up and running
 
 ## Contact
 
