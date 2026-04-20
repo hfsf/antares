@@ -154,13 +154,19 @@ class Simulator:
             # -----------------------------------------------------------------
             if use_c_code:
                 if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
-                    print(f"[{self.model.name}] Generating and compiling pure C code for extreme performance...")
+                    print(f"[{self.model.name}] Generating and compiling pure C code for extreme performance.")
                 
                 # Activate Just-In-Time C Code Compilation
                 opts["jit"] = True
                 opts["compiler"] = "shell"
-                opts["jit_options"] = {"flags": ["-O3", "-ffast-math"]}  # Aggressive optimization
-                
+                if getattr(cfg, "C_COMPILATION_OPTIMIZATION_LEVEL", "basic"):
+                    opts["jit_options"] = {"flags": ["-O1", "-pipe"]} # Basic optimization
+                elif getattr(cfg, "C_COMPILATION_OPTIMIZATION_LEVEL", "aggressive"):
+                    opts["jit_options"] = {"flags": ["-O3", "-ffast-math"]}  # Aggressive optimization
+                else:
+                    if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 2:
+                        print("[WARNING] Optimization level of C code for compilation not declared. Fall back to 'basic'")
+                        opts["jit_options"] = {"flags": ["-O1", "-pipe"]} # Basic optimization                
                 try:
                     self._integrator = ca.integrator(
                         "sim_integrator", self.solver_type, self.dae_structure, t0, t_span, opts

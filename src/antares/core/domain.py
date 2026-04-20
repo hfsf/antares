@@ -3,238 +3,247 @@
 """
 Domain Module.
 
-Defines the spatial domain abstract base class and its dimension-specific implementations
-(e.g., Domain1D). Automates the Method of Lines (MoL) matrix operations and prepares 
-the infrastructure for N-dimensional tensor expansions.
+Defines the spatial domain classes (1D, 2D) for PDE discretization.
+Automates the Method of Lines (MoL) matrix operations and applies N-dimensional 
+tensorial derivatives safely to SymPy Abstract Syntax Trees (AST).
 """
 
 from abc import ABC, abstractmethod
-
 import numpy as np
 
 from .error_definitions import UnexpectedValueError
 
 
-def _ast_matmul(matrix, vector, original_unit, domain_unit, deriv_order=1):
+def _ast_matmul_nd(matrix, tensor_sym, axis, target_unit):
     """
-    Performs a safe matrix multiplication for Abstract Syntax Tree (AST) EquationNodes.
-    Ensures dimensional coherence is maintained and protects the CasadiTranspiler
-    from residual SymPy objects.
-
-    :param np.ndarray matrix: The finite difference coefficient matrix.
-    :param list/np.ndarray vector: The vector of symbolic EquationNodes.
-    :param Unit original_unit: The physical unit of the state variable.
-    :param Unit domain_unit: The physical unit of the spatial domain.
-    :param int deriv_order: The derivative order (1 for Gradient, 2 for Laplacian).
-    :return: An array of symbolic nodes representing the spatial derivative.
+    Performs a safe Tensorial Matrix Multiplication for AST EquationNodes.
+    Prevents SymPy from generating 'sympy.Float' residuals that break CasADi JIT.
+    
+    :param np.ndarray matrix: The 1D finite difference matrix (N, N).
+    :param np.ndarray tensor_sym: The N-Dimensional array of symbolic nodes.
+    :param int axis: The axis along which to apply the derivative (0 for X, 1 for Y).
+    :param Unit target_unit: The resulting physical unit.
+    :return: An array of symbolic nodes of the same shape as tensor_sym.
     :rtype: np.ndarray
     """
-    N = len(vector)
-    result = []
-
-    target_unit = original_unit / (domain_unit**deriv_order)
-
-    for i in range(N):
-        row_sum = None  # Use None to prevent triggering overloaded __add__ prematurely
-        for j in range(N):
-            # Strict cast to native Python float.
-            # Prevents SymPy from generating 'sympy.Float' residuals that break CasADi JIT.
-            val = float(matrix[i, j])
-
-            if val != 0.0:
-                term = vector[j] * val
-                if row_sum is None:
-                    row_sum = term
-                else:
-                    row_sum = row_sum + term
-
-        # Safety fallback if the entire row is zero (e.g., boundary nodes)
-        if row_sum is None:
-            row_sum = vector[0] * 0.0
-
-        if hasattr(row_sum, "unit_object"):
+    shape = tensor_sym.shape
+    result = np.empty(shape, dtype=object)
+    
+    if len(shape) == 1:
+        N = shape[0]
+        for i in range(N):
+            row_sum = None
+            for j in range(N):
+                val = float(matrix[i, j])
+                if val != 0.0:
+                    term = tensor_sym[j] * val
+                    row_sum = term if row_sum is None else row_sum + term
+            
+            if row_sum is None:
+                row_sum = tensor_sym[0] * 0.0
+                
             row_sum.unit_object = target_unit
-
-        result.append(row_sum)
-
-    return np.array(result)
+            result[i] = row_sum
+        return result
+    
+    elif len(shape) == 2:
+        Nx, Ny = shape
+        if axis == 0:  # Apply derivative along X-axis (Rows) -> M @ T
+            for i in range(Nx):
+                for j in range(Ny):
+                    row_sum = None
+                    for k in range(Nx):
+                        val = float(matrix[i, k])
+                        if val != 0.0:
+                            term = tensor_sym[k, j] * val
+                            row_sum = term if row_sum is None else row_sum + term
+                    if row_sum is None:
+                        row_sum = tensor_sym[0, j] * 0.0
+                    row_sum.unit_object = target_unit
+                    result[i, j] = row_sum
+            return result
+            
+        elif axis == 1:  # Apply derivative along Y-axis (Cols) -> T @ M.T
+            for i in range(Nx):
+                for j in range(Ny):
+                    row_sum = None
+                    for k in range(Ny):
+                        val = float(matrix[j, k])
+                        if val != 0.0:
+                            term = tensor_sym[i, k] * val
+                            row_sum = term if row_sum is None else row_sum + term
+                    if row_sum is None:
+                        row_sum = tensor_sym[i, 0] * 0.0
+                    row_sum.unit_object = target_unit
+                    result[i, j] = row_sum
+            return result
+    else:
+        raise NotImplementedError("Derivatives for 3D tensors are planned for future releases.")
 
 
 class Domain(ABC):
-    """
-    Abstract Base Class for all spatial domains (1D, 2D, 3D).
-    Enforces a strict architectural contract for dimension-agnostic modeling,
-    ensuring that the Model class never needs to know the underlying geometry.
-    """
-
+    """Abstract Base Class enforcing the architectural contract for all domains."""
     def __init__(self, name, description="", method="mol"):
-        """
-        Initializes the base Domain properties.
-
-        :param str name: The identifier for the domain configuration.
-        :param str description: Optional domain description.
-        :param str method: Discretization method. 'mol' (Method of Lines) or 'collocation'.
-        """
         self.name = name
         self.description = description
         self.method = method.lower()
         self._owner_model_instance = None
 
     @abstractmethod
-    def get_bulk_slice(self):
-        """
-        Dimension-agnostic bulk locator.
-        Must return the slice (or tuple of slices) required to extract the 
-        interior nodes of the domain, excluding the boundary elements.
-        """
-        pass
+    def get_bulk_slice(self): pass
 
     @abstractmethod
-    def get_boundary(self, locator):
-        """
-        Dimension-agnostic boundary translator.
-        Must translate a semantic location (e.g., 'start', 'top') or a raw index 
-        into the appropriate NumPy slicing objects for the specific dimension.
-
-        :param str/slice/tuple locator: The user-defined boundary location.
-        :return: A tuple containing (numpy_index, string_suffix).
-        :rtype: tuple
-        """
-        pass
+    def get_boundary(self, locator): pass
 
     @abstractmethod
-    def _build_mesh(self):
-        """Internal method to construct numerical grids and operator matrices."""
-        pass
+    def apply_gradient(self, variable): pass
+
+    @abstractmethod
+    def apply_laplacian(self, variable): pass
+
+    @abstractmethod
+    def get_normal_gradient(self, variable, locator): pass
 
 
 class Domain1D(Domain):
-    """
-    Represents a 1-Dimensional spatial domain.
-    Acts as the foundational building block for multi-dimensional spatial systems.
-    """
-
-    def __init__(
-        self, name, length, n_points, unit, description="", method="mol", diff_scheme="central"
-    ):
-        """
-        Instantiates a 1D spatial domain.
-
-        :param str name: The identifier for the axis (e.g., 'z', 'r').
-        :param float length: The total physical length of the domain.
-        :param int n_points: The number of discrete nodes in the mesh.
-        :param Unit unit: The physical unit of the axis.
-        :param str description: Optional domain description.
-        :param str method: Discretization method. 'mol' (Finite Differences) or 'collocation'.
-        :param str diff_scheme: The finite difference scheme ('central', 'backward', 'forward').
-        """
+    """1-Dimensional spatial domain using Method of Lines."""
+    def __init__(self, name, length, n_points, unit, description="", method="mol", diff_scheme="central"):
         super().__init__(name, description, method)
-        
         self.length = float(length)
         self.n_points = int(n_points)
+        self.shape = (self.n_points,)
         self.unit = unit
         self.diff_scheme = diff_scheme.lower()
-
         self.grid = None
         self.dz = None
-        
-        # Spatial operators
-        self.A_matrix = None  # 1st Derivative Matrix (Gradient)
-        self.B_matrix = None  # 2nd Derivative Matrix (Laplacian)
-
+        self.A_matrix = None
+        self.B_matrix = None
         self._build_mesh()
 
     def get_bulk_slice(self):
-        """
-        Returns the indexing slice required to extract the 1D interior nodes.
-        
-        :return: A slice representing the bulk interior.
-        :rtype: slice
-        """
-        if self.method == "mol":
-            # For finite differences, the bulk strictly excludes node 0 and node -1.
-            return slice(1, -1)
-        elif self.method == "collocation":
-            return slice(1, -1)
+        return slice(1, -1)
 
     def get_boundary(self, locator):
-        """
-        Translates a semantic 1D boundary string into an exact index.
+        pos = str(locator).lower()
+        if pos in ["start", "inlet", "left", "bottom"]: return 0, "start"
+        if pos in ["end", "outlet", "right", "top"]: return -1, "end"
+        return locator, f"idx_{str(locator).replace(' ', '')}"
 
-        :param str/int/slice locator: 'start', 'end', 'inlet', 'outlet', or an explicit index.
-        :return: Tuple containing the numeric index and a naming suffix for the solver.
-        :rtype: tuple
-        :raises ValueError: If an incompatible 2D/3D term (e.g., 'top') is used.
+    def apply_gradient(self, variable):
+        base_unit = variable.discrete_nodes[0]().unit_object
+        target_unit = base_unit / self.unit
+        return _ast_matmul_nd(self.A_matrix, variable(), axis=0, target_unit=target_unit)
+
+    def apply_laplacian(self, variable):
+        base_unit = variable.discrete_nodes[0]().unit_object
+        target_unit = base_unit / (self.unit**2)
+        return _ast_matmul_nd(self.B_matrix, variable(), axis=0, target_unit=target_unit)
+
+    def get_normal_gradient(self, variable, locator):
         """
-        if isinstance(locator, str):
-            pos_lower = locator.lower()
-            if pos_lower in ["start", "inlet", "left", "bottom"]:
-                return 0, "start"
-            elif pos_lower in ["end", "outlet", "right", "top"]:
-                return -1, "end"
-            else:
-                raise ValueError(
-                    f"Invalid boundary locator '{locator}' for a 1D Domain. "
-                    f"Accepted terms are: 'start', 'end', 'inlet', 'outlet', 'left', 'right'."
-                )
-        else:
-            # Fallback for explicit slices or advanced tuple logic provided by the user
-            return locator, f"idx_{str(locator).replace(' ', '')}"
+        Computes the spatial gradient normal to the specified boundary.
+        In 1D, there is only one axis, so it returns the standard gradient.
+
+        :param Variable variable: The distributed state variable.
+        :param str/int/slice locator: The boundary locator.
+        :return: A NumPy array containing the symbolic normal gradient.
+        :rtype: np.ndarray
+        """
+        return self.apply_gradient(variable)
 
     def _build_mesh(self):
-        """
-        Routes the mesh generation to the appropriate numerical method.
-        """
-        if self.method == "mol":
-            self._build_finite_difference_matrices()
-        elif self.method == "collocation":
-            raise NotImplementedError(
-                "[ANTARES ARCHITECTURE] Orthogonal Collocation on Finite Elements (OCFE) "
-                "requires Jacobi/Radau polynomial root finding algorithms to establish "
-                "non-uniform grids. This feature is scheduled for a future release."
-            )
-        else:
-            raise UnexpectedValueError("Method must be 'mol' or 'collocation'.")
-
-    def _build_finite_difference_matrices(self):
-        """
-        Generates the banded coefficient matrices for the Method of Lines (MoL).
-        """
+        if self.method != "mol":
+            raise UnexpectedValueError("Only 'mol' is supported currently.")
+        
         self.dz = self.length / (self.n_points - 1)
         self.grid = np.linspace(0, self.length, self.n_points)
-
-        N = self.n_points
-        dz = self.dz
-
+        N, dz = self.n_points, self.dz
         self.A_matrix = np.zeros((N, N))
         self.B_matrix = np.zeros((N, N))
 
-        # --- Matrix B (2nd Derivative - Central Difference O(h^2)) ---
         for i in range(1, N - 1):
             self.B_matrix[i, i - 1] = 1.0 / (dz**2)
             self.B_matrix[i, i] = -2.0 / (dz**2)
             self.B_matrix[i, i + 1] = 1.0 / (dz**2)
-
-        # Matrix B Boundaries (Forward/Backward diff O(h^2))
         self.B_matrix[0, 0:3] = [1.0 / (dz**2), -2.0 / (dz**2), 1.0 / (dz**2)]
         self.B_matrix[-1, -3:] = [1.0 / (dz**2), -2.0 / (dz**2), 1.0 / (dz**2)]
 
-        # --- Matrix A (1st Derivative) ---
         if self.diff_scheme == "backward":
-            # Ideal for highly advective flows (plug-flow regime)
             for i in range(1, N):
                 self.A_matrix[i, i] = 1.0 / dz
                 self.A_matrix[i, i - 1] = -1.0 / dz
-            
-            # Forward diff fallback for the first node
             self.A_matrix[0, 0:2] = [-1.0 / dz, 1.0 / dz]
-
         elif self.diff_scheme == "central":
-            # Ideal for diffusion-dominated regimes
             for i in range(1, N - 1):
                 self.A_matrix[i, i + 1] = 1.0 / (2 * dz)
                 self.A_matrix[i, i - 1] = -1.0 / (2 * dz)
-            
-            # Forward diff for start, Backward diff for end
             self.A_matrix[0, 0:3] = [-3.0 / (2 * dz), 4.0 / (2 * dz), -1.0 / (2 * dz)]
             self.A_matrix[-1, -3:] = [1.0 / (2 * dz), -4.0 / (2 * dz), 3.0 / (2 * dz)]
+
+
+class Domain2D(Domain):
+    """
+    2-Dimensional spatial domain constructed as a Tensor Product of two 1D Domains.
+    """
+    def __init__(self, name, x_domain, y_domain, description=""):
+        super().__init__(name, description, method=x_domain.method)
+        
+        if not isinstance(x_domain, Domain1D) or not isinstance(y_domain, Domain1D):
+            raise TypeError("Domain2D requires two Domain1D instances as axes.")
+        
+        self.x = x_domain
+        self.y = y_domain
+        self.shape = (self.x.n_points, self.y.n_points)
+        self.n_points = self.shape[0] * self.shape[1]
+        self.X_grid, self.Y_grid = np.meshgrid(self.x.grid, self.y.grid, indexing='ij')
+
+    def get_bulk_slice(self):
+        return (slice(1, -1), slice(1, -1))
+
+    def get_boundary(self, locator):
+        pos = str(locator).lower()
+        if pos in ["left", "west", "x_start"]: return (0, slice(None)), "left"
+        elif pos in ["right", "east", "x_end"]: return (-1, slice(None)), "right"
+        elif pos in ["bottom", "south", "y_start"]: return (slice(None), 0), "bottom"
+        elif pos in ["top", "north", "y_end"]: return (slice(None), -1), "top"
+        else: raise ValueError(f"Unknown 2D boundary locator '{locator}'.")
+
+    def apply_gradient(self, variable):
+        raise NotImplementedError(
+            "In 2D, the gradient is a vector field (dT/dx, dT/dy). "
+            "Please apply gradients directly via individual axes if needed."
+        )
+
+    def apply_laplacian(self, variable):
+        sym_tensor = variable()
+        base_unit = variable.discrete_nodes[0, 0]().unit_object
+        
+        d2_dx2 = _ast_matmul_nd(self.x.B_matrix, sym_tensor, axis=0, target_unit=base_unit/(self.x.unit**2))
+        d2_dy2 = _ast_matmul_nd(self.y.B_matrix, sym_tensor, axis=1, target_unit=base_unit/(self.y.unit**2))
+        
+        return d2_dx2 + d2_dy2
+
+    def get_normal_gradient(self, variable, locator):
+        """
+        Computes the spatial gradient normal to the specified 2D boundary.
+        Automatically selects the orthogonal derivative (X or Y) based on the boundary.
+
+        :param Variable variable: The distributed state variable.
+        :param str locator: The semantic boundary locator (e.g., 'top', 'left').
+        :return: A NumPy array containing the symbolic normal gradient.
+        :rtype: np.ndarray
+        """
+        pos = str(locator).lower()
+        sym_tensor = variable()
+        base_unit = variable.discrete_nodes[0, 0]().unit_object
+        
+        if pos in ["left", "west", "x_start", "right", "east", "x_end"]:
+            # Normal to Left/Right is the X-axis (axis 0)
+            return _ast_matmul_nd(self.x.A_matrix, sym_tensor, axis=0, target_unit=base_unit/self.x.unit)
+            
+        elif pos in ["bottom", "south", "y_start", "top", "north", "y_end"]:
+            # Normal to Bottom/Top is the Y-axis (axis 1)
+            return _ast_matmul_nd(self.y.A_matrix, sym_tensor, axis=1, target_unit=base_unit/self.y.unit)
+            
+        else:
+            raise ValueError(f"Unknown 2D boundary locator '{locator}' for normal gradient.")

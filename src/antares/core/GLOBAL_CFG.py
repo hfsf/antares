@@ -37,6 +37,11 @@ DEFAULT_INTEGRATOR = "idas"
 # to be installed and available in the system PATH.
 USE_C_CODE_COMPILATION = False
 
+# Define C compilation optimization. Set to "aggressive" for maximum optimization
+# and slow compilation time, or "basic" for default  optimization for fast compilation
+# time, using RAM to store temporary files during compilation
+C_COMPILATION_OPTIMIZATION_LEVEL = "basic" #aggressive 
+
 # Default numerical tolerances for the CasADi integrators and rootfinders.
 # Tighten these (e.g., 1e-8 / 1e-10) for highly non-linear or sensitive systems.
 DEFAULT_RELATIVE_TOLERANCE = 1e-6
