@@ -1,7 +1,9 @@
-# *coding:utf-8*
+# -*- coding: utf-8 -*-
 
 """
-Define Simulator class.
+Simulator Module.
+
+Defines the Simulator class.
 Receives the phenomenological model, calls the CasadiTranspiler, and solves
 the Differential-Algebraic Equation (DAE) system over time using CasADi's
 native integrators. Optimized with Lazy Compilation, Auto-Fallback rules,
@@ -17,6 +19,7 @@ import antares.core.GLOBAL_CFG as cfg
 from antares.backend.transpiler import CasadiTranspiler
 from antares.core.error_definitions import (
     AbsentRequiredObjectError,
+    DegreesOfFreedomError,
     UnexpectedValueError,
 )
 from antares.core.results import Results
@@ -24,78 +27,131 @@ from antares.core.results import Results
 
 class Simulator:
     """
-    Definition of Simulator class. Orchestrates the integration of the mathematical model.
+    Orchestrates the numerical integration of the mathematical model.
+    Bridges the declarative Model abstractions with the high-performance 
+    CasADi backend.
     """
 
-    def __init__(self, model, solver_type=None):
+    def __init__(self, model, solver_type=None, check_dof=None):
         """
-        Instantiate Simulator. Prepares the simulation by transpiling the model
+        Instantiates the Simulator. Prepares the simulation by transpiling the model
         and setting up the ground for the CasADi solver.
 
-        :param Model model:
-            The model object to be simulated. Must be fully declared.
-
-        :param str solver_type:
-            The type of CasADi integrator to use. If None, falls back to the
-            global DEFAULT_INTEGRATOR (usually 'idas').
+        :param Model model: The model object to be simulated. Must be fully declared.
+        :param str solver_type: The type of CasADi integrator to use. If None, falls 
+                                back to the global DEFAULT_INTEGRATOR (usually 'idas').
+        :param bool check_dof: Flag to enable/disable DOF validation at compile time. 
+                               If None, delegates to GLOBAL_CFG.PERFORM_DOF_CHECK.
         """
         self.model = model
 
         # Applies global configuration if no specific solver is requested
         self.solver_type = (
-            solver_type if solver_type is not None else cfg.DEFAULT_INTEGRATOR
+            solver_type if solver_type is not None else getattr(cfg, "DEFAULT_INTEGRATOR", "idas")
         )
 
         # Checking if the solver type is within the standard expected ones
         if self.solver_type not in ["idas", "cvodes", "collocation", "rk"]:
-            if cfg.VERBOSITY_LEVEL >= 1:
+            if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
                 warnings.warn(
-                    f"Solver type '{self.solver_type}' might not be fully supported. Proceed with caution."
+                    f"Solver type '{self.solver_type}' might not be natively supported. "
+                    f"Proceed with caution."
                 )
 
         self.transpiler = CasadiTranspiler(model)
 
-        if cfg.VERBOSITY_LEVEL >= 1:
+        if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
             print(f"Transpiling model '{self.model.name}' to CasADi representation...")
 
+        # 1. Transpile the mathematical AST into CasADi graph
         self.dae_structure = self.transpiler.transpile()
+
+        # 2. VERIFICATION OF DEGREES OF FREEDOM (Fail-Fast: Compile time)
+        do_dof_check = check_dof if check_dof is not None else getattr(cfg, "PERFORM_DOF_CHECK", True)
+        if do_dof_check:
+            self._check_degrees_of_freedom()
 
         # Integrator options injected from GLOBAL_CFG
         self.solver_opts = {
-            "calc_ic": True,  # Automatically calculates consistent initial conditions (useful for DAEs)
+            "calc_ic": True,  # Automatically calculates consistent initial conditions (crucial for DAEs)
             "calc_icB": False,
-            "reltol": cfg.DEFAULT_RELATIVE_TOLERANCE,
-            "abstol": cfg.DEFAULT_ABSOLUTE_TOLERANCE,
+            "reltol": getattr(cfg, "DEFAULT_RELATIVE_TOLERANCE", 1e-6),
+            "abstol": getattr(cfg, "DEFAULT_ABSOLUTE_TOLERANCE", 1e-8),
         }
 
         # Attributes for Lazy Compilation (Performance optimization)
         self._integrator = None
         self._last_t_span = None
 
+    def _check_degrees_of_freedom(self):
+        """
+        Validates the mathematical closure of the system by calculating 
+        the Degrees of Freedom (DOF) of the transpiled computational graph.
+        Prints a compilation report if verbosity allows.
+
+        :raises DegreesOfFreedomError: If total variables and total equations do not match.
+        """
+        # Count explicit transpiled variables
+        n_x = self.dae_structure["x"].size1() if "x" in self.dae_structure else 0
+        n_z = self.dae_structure["z"].size1() if "z" in self.dae_structure else 0
+        total_vars = n_x + n_z
+
+        # Count explicit transpiled equations
+        n_ode = self.dae_structure["ode"].size1() if "ode" in self.dae_structure else 0
+        n_alg = self.dae_structure["alg"].size1() if "alg" in self.dae_structure else 0
+        total_eqs = n_ode + n_alg
+
+        dof = total_vars - total_eqs
+
+        # ALWAYS PRINT THE COMPILATION REPORT (If verbosity is active)
+        if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
+            print(f"\n[{self.model.name} COMPILATION REPORT]")
+            print(f"  -> Total Variables: {total_vars} (Differential: {n_x}, Algebraic: {n_z})")
+            print(f"  -> Total Equations: {total_eqs} (ODE: {n_ode}, Algebraic: {n_alg})")
+            print(f"  -> Degrees of Freedom: {dof}")
+            if dof == 0:
+                print("  -> Status: System is mathematically closed. OK!\n")
+
+        # THROW ERROR IF SYSTEM IS OPEN
+        if dof != 0:
+            msg = (
+                f"\n[ANTARES MATHEMATICAL KERNEL] Degrees of Freedom Violation!\n"
+                f"The transpiled model '{self.model.name}' is not mathematically closed.\n\n"
+                f"  -> Total Variables: {total_vars} (Differential: {n_x}, Algebraic: {n_z})\n"
+                f"  -> Total Equations: {total_eqs} (ODE: {n_ode}, Algebraic: {n_alg})\n"
+                f"  -> DOF (Vars - Eqs): {dof}\n\n"
+            )
+            if dof > 0:
+                msg += f"SOLUTION: The system is underspecified. You are missing {dof} equation(s) or Boundary Condition(s)."
+            else:
+                msg += f"SOLUTION: The system is overspecified. You have {abs(dof)} redundant or conflicting equation(s)."
+            
+            raise DegreesOfFreedomError(msg)
+
     def _compile_integrator(self, t_span):
         """
         Compiles the CasADi JIT integrator only if it's the first run or if
-        the time grid has changed. This avoids massive performance drops in optimization loops.
+        the time grid has changed. This avoids massive performance drops during 
+        iterative optimization loops.
 
-        :param array-like t_span:
-            1D array containing the time grid for the simulation.
+        :param array-like t_span: 1D array containing the time grid for the simulation.
         """
         # Check if arrays are exactly equal to avoid useless recompilation
         if self._integrator is None or not np.array_equal(t_span, self._last_t_span):
-            if cfg.VERBOSITY_LEVEL >= 2:
+            if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 2:
                 print(
                     "Compiling CasADi JIT integrator (This occurs only once per time grid)..."
                 )
 
             opts = self.solver_opts.copy()
 
-            # Removemos antigas flags do dicionário (para limpar os warnings)
+            # Remove deprecated flags strictly to prevent CasADi warnings
             opts.pop("grid", None)
             opts.pop("output_t0", None)
 
             t0 = t_span[0]
 
-            # NOVO PADRÃO CASADI: Passamos t0 e t_span como argumentos posicionais diretamente
+            # CasADi native signature: passing t0 and t_span directly
             self._integrator = ca.integrator(
                 "sim_integrator", self.solver_type, self.dae_structure, t0, t_span, opts
             )
@@ -104,33 +160,25 @@ class Simulator:
 
     def run(self, t_span, initial_conditions=None, parameters_dict=None):
         """
-        Executes the simulation. If arguments are omitted, it uses the default
-        values defined in the Model, except for differential variables which
-        strictly require explicit initial conditions.
+        Executes the simulation. 
 
-        :param array-like t_span:
-            Time grid for the simulation (e.g., np.linspace(0, 10, 100)).
+        By default, it uses the Initial Conditions and Parameters defined internally 
+        in the Model object. The optional dictionaries serve as runtime overrides.
 
-        :param dict initial_conditions:
-            Dictionary containing initial conditions for the variables.
-            Format: {'variable_name': value}. Defaults to None.
-
-        :param dict parameters_dict:
-            Dictionary containing values for the parameters.
-            Format: {'parameter_name': value}. Defaults to None.
-
-        :return results_container:
-            Results object containing the structured data of the simulation.
-        :rtype Results:
+        :param array-like t_span: Time grid for the simulation.
+        :param dict initial_conditions: Runtime override for variables ICs. Defaults to None.
+        :param dict parameters_dict: Runtime override for parameters. Defaults to None.
+        :return: Results object containing the structured data of the simulation.
+        :rtype: Results
         """
         # Ensure arguments are dictionaries, even if None is passed
         ic_dict = initial_conditions if initial_conditions is not None else {}
         p_dict = parameters_dict if parameters_dict is not None else {}
 
-        # 1. Smart Compilation (Lazy)
+        # 1. Smart Compilation (Lazy Evaluation)
         self._compile_integrator(t_span)
 
-        # 2. Extract input vectors (With category-based safety rules)
+        # 2. Extract input vectors (Resolving Encapsulation vs Override logic)
         x0_vec = self._build_input_vector(
             ic_dict,
             self.transpiler.x_vars,
@@ -138,10 +186,16 @@ class Simulator:
             category="differential",
         )
         z0_vec = self._build_input_vector(
-            ic_dict, self.transpiler.z_vars, self.model.variables, category="algebraic"
+            ic_dict, 
+            self.transpiler.z_vars, 
+            self.model.variables, 
+            category="algebraic"
         )
         p_vec = self._build_input_vector(
-            p_dict, self.transpiler.p_vars, self.model.parameters, category="parameter"
+            p_dict, 
+            self.transpiler.p_vars, 
+            self.model.parameters, 
+            category="parameter"
         )
 
         # 3. Fast native execution
@@ -155,80 +209,71 @@ class Simulator:
         x_res = res["xf"].full().T
         z_res = res["zf"].full().T if self.transpiler.z_vars else None
 
-        # 5. Packaging into Results container (Phase 3)
+        # 5. Packaging into Results container
         results_container = Results(
-            name=f"Sim_{self.model.name}", time_units=cfg.DEFAULT_TIME_UNIT
+            name=f"Sim_{self.model.name}", 
+            time_units=getattr(cfg, "DEFAULT_TIME_UNIT", "s")
         )
 
-        # Extract original names for the DataFrame columns
         x_names = [var.name() for var in self.transpiler.x_vars]
         z_names = [var.name() for var in self.transpiler.z_vars]
 
         results_container.load_from_simulator(t_span, x_res, z_res, x_names, z_names)
 
-        if cfg.VERBOSITY_LEVEL >= 1:
+        if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
             print("Simulation successfully completed!")
 
         return results_container
 
-    def _build_input_vector(
-        self, input_dict, ca_vars_list, model_dict, category="algebraic"
-    ):
+    def _build_input_vector(self, input_dict, ca_vars_list, model_dict, category="algebraic"):
         """
-        Builds the input vector applying strict safety rules depending on
-        the variable type (differential, algebraic, or parameter).
-
-        :param dict input_dict:
-            Dictionary provided by the user in the run() method.
-        :param list ca_vars_list:
-            List of CasADi symbolic variables from the transpiler.
-        :param dict model_dict:
-            Dictionary of objects (Variables or Parameters) from the Model.
-        :param str category:
-            Category of the variables ("differential", "algebraic", or "parameter").
-
-        :return vec_:
-            List of numerical values ordered exactly as CasADi expects.
-        :rtype list:
-
-        :raises AbsentRequiredObjectError:
-            If a differential variable is missing its initial condition.
-        :raises UnexpectedValueError:
-            If a parameter or algebraic variable cannot be resolved.
+        Builds the input numerical vector expected by CasADi, resolving the 
+        hierarchy between runtime overrides and model-encapsulated definitions.
+        
+        :param dict input_dict: Dictionary provided by the user in the run() method.
+        :param list ca_vars_list: List of CasADi symbolic variables from the transpiler.
+        :param dict model_dict: Dictionary of mathematical objects (Variables or Parameters) from the Model.
+        :param str category: The algebraic classification ("differential", "algebraic", or "parameter").
+        :return: List of numerical values ordered exactly as CasADi expects.
+        :rtype: list
+        :raises AbsentRequiredObjectError: If a differential variable lacks an Initial Condition.
+        :raises UnexpectedValueError: If resolution fails entirely.
         """
         vec = []
         for ca_var in ca_vars_list:
             var_name = ca_var.name()
 
-            # 1st Priority: The user explicitly provided it in the run() call
+            # Priority 1: User runtime override (passed via the run() method)
             if var_name in input_dict:
                 vec.append(input_dict[var_name])
 
-            # 2nd Priority: Behavior depends on the nature of the variable
+            # Priority 2: Model Encapsulated Initial Conditions
             elif category == "differential":
-                # STRICT SAFEGUARD: State variables (dx/dt) demand Initial Conditions.
-                raise AbsentRequiredObjectError(
-                    f"The differential variable '{var_name}' requires an explicit "
-                    f"Initial Condition. Please provide its value in the 'initial_conditions' "
-                    f"dictionary when calling the run() method."
-                )
+                if var_name in model_dict and getattr(model_dict[var_name], "is_specified", False):
+                    vec.append(model_dict[var_name].value)
+                else:
+                    raise AbsentRequiredObjectError(
+                        f"The differential variable '{var_name}' requires an explicit "
+                        f"Initial Condition. Please use 'self.setInitialCondition()' "
+                        f"in the Model declaration, or pass it via the 'initial_conditions' "
+                        f"dictionary in the run() method."
+                    )
 
+            # Priority 3: Parameters or Algebraic variable guesses
             elif var_name in model_dict:
-                # Parameters or algebraic "guesses" can fallback to the .value defined in the Model
                 vec.append(model_dict[var_name].value)
 
             else:
-                # 3rd Priority: Last resort for algebraic variables
+                # Priority 4: Final fallback
                 if category == "algebraic":
-                    # If strict mode is enabled, we could force the user to provide algebraic guesses too
-                    if cfg.STRICT_MODE:
+                    if getattr(cfg, "STRICT_MODE", False):
                         raise AbsentRequiredObjectError(
                             f"[STRICT MODE] Missing initial guess for algebraic variable '{var_name}'."
                         )
                     vec.append(0.0)
                 else:
                     raise UnexpectedValueError(
-                        f"Unable to find a valid numerical value for {category}: '{var_name}'"
+                        f"Unable to resolve a numerical value for {category}: '{var_name}'"
                     )
 
         return vec

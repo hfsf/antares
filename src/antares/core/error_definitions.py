@@ -202,6 +202,13 @@ class DimensionalCoherenceError(Exception):
         return msg
 
 
+class DegreesOfFreedomError(Exception):
+    """
+    Raised when the mathematical system is not perfectly closed 
+    (Degrees of Freedom != 0) before numerical integration.
+    """
+    pass
+
 class UnitOperationError(Exception):
     """
     Error raised by error in definitions of UnitOp objects

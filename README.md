@@ -4,7 +4,7 @@
 
 ![antares_logo](https://github.com/hfsf/antares/blob/main/docs/antares_logo.png?raw=true)
 
-![version](https://img.shields.io/badge/version-0.1.5a-orange?style=for-the-badge)
+![version](https://img.shields.io/badge/version-0.1.6a-orange?style=for-the-badge)
 ![python](https://img.shields.io/badge/python-3.10%2B-blue?style=for-the-badge)
 [![License: GPL](https://img.shields.io/badge/License-GPL-blue.svg?style=for-the-badge)](https://opensource.org/licenses/GPL)
 <!-- Placeholder for CI/CD and Docs badges
@@ -41,7 +41,7 @@ ANTARES is being architected from the ground up to support advanced methodologie
 
 ## Current Status
 
-⚠️ **Alpha Version (v0.1.5a)**
+⚠️ **Alpha Version (v0.1.6a)**
 
 ANTARES is currently in its core architectural development phase. The codebase is fluid, and the API is subject to change as we lay the groundwork for the future features mentioned above. The project is not yet mature enough for external contributions.
 

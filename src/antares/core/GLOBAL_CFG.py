@@ -19,6 +19,10 @@ DIMENSIONAL_COHERENCE_CHECK = True
 # Default unit for the independent variable (usually time) in dynamic simulations.
 DEFAULT_TIME_UNIT = "s"
 
+# If True, validates the mathematical closure of the system (Degrees of Freedom == 0)
+# before numerical integration. Highly recommended to catch modeling errors early.
+PERFORM_DOF_CHECK = True
+
 # =============================================================================
 # 2. SIMULATOR & SOLVER DEFAULTS
 # =============================================================================
@@ -51,19 +55,24 @@ STRICT_MODE = False
 # 4. PLOTTING & AESTHETICS
 # =============================================================================
 
-# Define se o framework deve usar o Seaborn para estilizar os gráficos
+# Defines if the framework should use Seaborn to style the plots natively.
 USE_SEABORN_STYLE = True
 
-# Temas visuais do Seaborn. Opções: 'darkgrid', 'whitegrid', 'dark', 'white', 'ticks'
+# Seaborn visual themes. Options: 'darkgrid', 'whitegrid', 'dark', 'white', 'ticks'
 SEABORN_THEME = "whitegrid"
 
-# Paletas de cores. Opções: 'deep', 'muted', 'pastel', 'bright', 'dark', 'colorblind'
+# Color palettes. Options: 'deep', 'muted', 'pastel', 'bright', 'dark', 'colorblind'
 SEABORN_PALETTE = "colorblind"
 
-# Escala dos elementos (fontes, linhas). Opções: 'paper', 'notebook', 'talk', 'poster'
+# Scale of elements (fonts, lines). Options: 'paper', 'notebook', 'talk', 'poster'
 SEABORN_CONTEXT = "notebook"
 
-# Propriedades padrão da figura exportada
+# Default properties for exported and rendered figures.
 PLOT_FIGSIZE = (10, 6)
 PLOT_DPI = 300
 PLOT_LINEWIDTH = 2.5
+
+# Specific visual markers for spatial profiles and discrete data points.
+PLOT_PRIMARY_COLOR = "#d55e00"  # Vermillion (Colorblind safe default)
+PLOT_MARKER = "o"               # Standard circle marker
+PLOT_MARKERSIZE = 4             # Standard size of the markers
