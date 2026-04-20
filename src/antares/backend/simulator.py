@@ -73,7 +73,7 @@ class Simulator:
 
         # Integrator options injected from GLOBAL_CFG
         self.solver_opts = {
-            "calc_ic": True,  # Automatically calculates consistent initial conditions (crucial for DAEs)
+            "calc_ic": True,  # Automatically calculates consistent initial conditions
             "calc_icB": False,
             "reltol": getattr(cfg, "DEFAULT_RELATIVE_TOLERANCE", 1e-6),
             "abstol": getattr(cfg, "DEFAULT_ABSOLUTE_TOLERANCE", 1e-8),
@@ -128,20 +128,18 @@ class Simulator:
             
             raise DegreesOfFreedomError(msg)
 
-    def _compile_integrator(self, t_span):
+    def _compile_integrator(self, t_span, use_c_code=False):
         """
-        Compiles the CasADi JIT integrator only if it's the first run or if
-        the time grid has changed. This avoids massive performance drops during 
-        iterative optimization loops.
+        Compiles the CasADi JIT integrator. If use_c_code is True, invokes GCC/Clang 
+        to compile the DAE system into native C machine code. Includes an automatic 
+        fallback to the CasADi Virtual Machine if the user lacks a C compiler.
 
         :param array-like t_span: 1D array containing the time grid for the simulation.
+        :param bool use_c_code: Internal flag resolving the hierarchy of C code compilation.
         """
-        # Check if arrays are exactly equal to avoid useless recompilation
         if self._integrator is None or not np.array_equal(t_span, self._last_t_span):
             if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 2:
-                print(
-                    "Compiling CasADi JIT integrator (This occurs only once per time grid)..."
-                )
+                print("Compiling CasADi integrator (This occurs only once per time grid)...")
 
             opts = self.solver_opts.copy()
 
@@ -151,14 +149,42 @@ class Simulator:
 
             t0 = t_span[0]
 
-            # CasADi native signature: passing t0 and t_span directly
-            self._integrator = ca.integrator(
-                "sim_integrator", self.solver_type, self.dae_structure, t0, t_span, opts
-            )
+            # -----------------------------------------------------------------
+            # COMPILATION CORE (C-CODE vs VIRTUAL MACHINE)
+            # -----------------------------------------------------------------
+            if use_c_code:
+                if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
+                    print(f"[{self.model.name}] Generating and compiling pure C code for extreme performance...")
+                
+                # Activate Just-In-Time C Code Compilation
+                opts["jit"] = True
+                opts["compiler"] = "shell"
+                opts["jit_options"] = {"flags": ["-O3", "-ffast-math"]}  # Aggressive optimization
+                
+                try:
+                    self._integrator = ca.integrator(
+                        "sim_integrator", self.solver_type, self.dae_structure, t0, t_span, opts
+                    )
+                except Exception as e:
+                    # FALLBACK SAFETY NET: If GCC is not found in PATH, downgrade gracefully
+                    if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
+                        warnings.warn(
+                            "Native C code compilation failed (Is a C compiler like GCC installed "
+                            "and added to PATH?). Falling back to the CasADi Virtual Machine."
+                        )
+                    opts["jit"] = False
+                    self._integrator = ca.integrator(
+                        "sim_integrator", self.solver_type, self.dae_structure, t0, t_span, opts
+                    )
+            else:
+                # Standard Virtual Machine compilation
+                self._integrator = ca.integrator(
+                    "sim_integrator", self.solver_type, self.dae_structure, t0, t_span, opts
+                )
 
             self._last_t_span = t_span
 
-    def run(self, t_span, initial_conditions=None, parameters_dict=None):
+    def run(self, t_span, initial_conditions=None, parameters_dict=None, use_c_code=None):
         """
         Executes the simulation. 
 
@@ -168,15 +194,20 @@ class Simulator:
         :param array-like t_span: Time grid for the simulation.
         :param dict initial_conditions: Runtime override for variables ICs. Defaults to None.
         :param dict parameters_dict: Runtime override for parameters. Defaults to None.
+        :param bool use_c_code: Runtime override to force native C compilation. 
+                                If None, delegates to GLOBAL_CFG.USE_C_CODE_COMPILATION.
         :return: Results object containing the structured data of the simulation.
         :rtype: Results
         """
+        # Resolve compilation hierarchy (Parameter > Global Config > Default)
+        do_c_code = use_c_code if use_c_code is not None else getattr(cfg, "USE_C_CODE_COMPILATION", False)
+
         # Ensure arguments are dictionaries, even if None is passed
         ic_dict = initial_conditions if initial_conditions is not None else {}
         p_dict = parameters_dict if parameters_dict is not None else {}
 
-        # 1. Smart Compilation (Lazy Evaluation)
-        self._compile_integrator(t_span)
+        # 1. Smart Compilation (Lazy Evaluation + C-Code Generation)
+        self._compile_integrator(t_span, use_c_code=do_c_code)
 
         # 2. Extract input vectors (Resolving Encapsulation vs Override logic)
         x0_vec = self._build_input_vector(
@@ -229,15 +260,6 @@ class Simulator:
         """
         Builds the input numerical vector expected by CasADi, resolving the 
         hierarchy between runtime overrides and model-encapsulated definitions.
-        
-        :param dict input_dict: Dictionary provided by the user in the run() method.
-        :param list ca_vars_list: List of CasADi symbolic variables from the transpiler.
-        :param dict model_dict: Dictionary of mathematical objects (Variables or Parameters) from the Model.
-        :param str category: The algebraic classification ("differential", "algebraic", or "parameter").
-        :return: List of numerical values ordered exactly as CasADi expects.
-        :rtype: list
-        :raises AbsentRequiredObjectError: If a differential variable lacks an Initial Condition.
-        :raises UnexpectedValueError: If resolution fails entirely.
         """
         vec = []
         for ca_var in ca_vars_list:

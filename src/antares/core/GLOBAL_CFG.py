@@ -31,6 +31,12 @@ PERFORM_DOF_CHECK = True
 # 'idas' is highly recommended for stiff DAE systems. 'cvodes' for simple ODEs.
 DEFAULT_INTEGRATOR = "idas"
 
+# If True, CasADi will translate the mathematical graph into pure C code,
+# compile it in the background using GCC/Clang, and inject the shared library
+# into the solver. This yields maximum execution speed but requires a C compiler
+# to be installed and available in the system PATH.
+USE_C_CODE_COMPILATION = False
+
 # Default numerical tolerances for the CasADi integrators and rootfinders.
 # Tighten these (e.g., 1e-8 / 1e-10) for highly non-linear or sensitive systems.
 DEFAULT_RELATIVE_TOLERANCE = 1e-6

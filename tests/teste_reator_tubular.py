@@ -53,7 +53,7 @@ if __name__ == "__main__":
 
     # Execução limpa. O Motor DAE cuida das CIs encapsuladas e do cast algébrico.
     simulador = Simulator(model=reator)
-    resultados = simulador.run(t_span)
+    resultados = simulador.run(t_span, use_c_code=True)
 
     # =============================================================================
     # 4. GERAÇÃO DE GRÁFICOS (DINÂMICO, ESPACIAL E SUPERFÍCIE 3D)
