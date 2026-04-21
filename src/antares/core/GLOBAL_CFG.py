@@ -42,6 +42,10 @@ USE_C_CODE_COMPILATION = False
 # time, using RAM to store temporary files during compilation
 C_COMPILATION_OPTIMIZATION_LEVEL = "basic" #aggressive 
 
+# Keep the files related to C compilation after simulation. It is useful
+# for generated code depuration
+KEEP_TEMPORARY_COMPILATION_FILES = False
+
 # Default numerical tolerances for the CasADi integrators and rootfinders.
 # Tighten these (e.g., 1e-8 / 1e-10) for highly non-linear or sensitive systems.
 DEFAULT_RELATIVE_TOLERANCE = 1e-6
@@ -91,4 +95,9 @@ PLOT_LINEWIDTH = 2.5
 # Specific visual markers for spatial profiles and discrete data points.
 PLOT_PRIMARY_COLOR = "#d55e00"  # Vermillion (Colorblind safe default)
 PLOT_MARKER = "o"               # Standard circle marker
-PLOT_MARKERSIZE = 4             # Standard size of the markers
+PLOT_MARKERSIZE = 8             # Standard size of the markers
+
+# Configurations for heatmaps (2D) and 3D slicing (3D)
+PLOT_COLORMAP_HEAT = "inferno"
+PLOT_COLORMAP_MASS = "viridis"
+PLOT_CONTOUR_LEVELS = 100

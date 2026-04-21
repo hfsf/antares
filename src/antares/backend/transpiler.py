@@ -106,6 +106,7 @@ class CasadiTranspiler:
         # 1. MATHEMATICAL ISOLATION (With Progress Bar)
         # =====================================================================
         eq_items = self.model.equations.items()
+        print("\n")
         if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
             eq_items = tqdm(eq_items, desc="Isolating Derivatives", unit=" eq")
 
@@ -149,7 +150,7 @@ class CasadiTranspiler:
         
         if ode_sympy_list:
             if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
-                print(f" -> Batch Lambdifying {len(ode_sympy_list)} ODEs (Please wait...)")
+                print(f"\n -> Batch Lambdifying {len(ode_sympy_list)} ODEs (Please wait...)")
                 
             func_casadi_ode = sp.lambdify(sympy_symbols_list, ode_sympy_list, modules=[type_mapping, ca])
             ode_casadi_results = func_casadi_ode(*casadi_symbols_list)
@@ -163,7 +164,7 @@ class CasadiTranspiler:
         alg_casadi_results = []
         if alg_sympy_list:
             if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
-                print(f" -> Batch Lambdifying {len(alg_sympy_list)} Algebraic constraints...")
+                print(f"\n -> Batch Lambdifying {len(alg_sympy_list)} Algebraic constraints...")
                 
             func_casadi_alg = sp.lambdify(sympy_symbols_list, alg_sympy_list, modules=[type_mapping, ca])
             alg_casadi_results = func_casadi_alg(*casadi_symbols_list)
