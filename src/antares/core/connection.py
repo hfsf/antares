@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 
 """
-Define the generic Connection class for the ANTARES framework.
+Connection Module.
+
+Defines the generic Connection class for the ANTARES framework.
 This class acts as a topological link between two models or ports,
 generating equality constraints to represent physical or logical streams.
+It leverages the master Model's creation methods to ensure full tensor-safety
+across 1D, 2D, and 3D domain couplings.
 """
 
-import src.antares.core.GLOBAL_CFG as cfg
-
-from .equation import Equation
+from . import GLOBAL_CFG as cfg
 from .error_definitions import AbsentRequiredObjectError, UnexpectedValueError
 from .variable import Variable
 
@@ -16,26 +18,30 @@ from .variable import Variable
 class Connection:
     """
     Generic Connection class.
-    It can dynamically inspect ports for auto-connection or explicitly connect
-    user-defined variables between two models.
+    
+    Dynamically inspects ports for auto-connection or explicitly connects
+    user-defined variables between two phenomenological models.
     """
 
     def __init__(
         self, name, source_port, sink_port, source_var_name=None, sink_var_name=None
     ):
         """
-        Connects two ports/models.
+        Initializes the topological connection and maps the equality expressions.
 
-        :param str name: Name of the connection.
-        :param object source_port: The origin object (source model/port).
-        :param object sink_port: The destination object (sink model/port).
-        :param str source_var_name: (Optional) Specific variable name in the source port.
-        :param str sink_var_name: (Optional) Specific variable name in the sink port.
+        :param str name: Unique name of the connection.
+        :param Model source_port: The origin object (source model/port).
+        :param Model sink_port: The destination object (sink model/port).
+        :param str source_var_name: Specific variable name in the source port. Defaults to None.
+        :param str sink_var_name: Specific variable name in the sink port. Defaults to None.
         """
         self.name = name
         self.source_port = source_port
         self.sink_port = sink_port
-        self.equations = []
+        
+        # Stores the generated mathematical constraints before applying them
+        # Format: list of tuples (eq_name, description, symbolic_expression)
+        self._pending_links = []
 
         # Decision logic: Explicit connection vs. Auto-discovery
         if source_var_name and sink_var_name:
@@ -45,7 +51,10 @@ class Connection:
 
     def _generate_specific_equation(self, source_var_name, sink_var_name):
         """
-        Generates a single equality equation for specifically named variables.
+        Generates a single equality expression for specifically named variables.
+        
+        :raises AbsentRequiredObjectError: If the specified variables do not exist in the ports.
+        :raises UnexpectedValueError: If the attributes are not valid Variable instances.
         """
         # Verify if variables exist in their respective ports
         if not hasattr(self.source_port, source_var_name):
@@ -67,19 +76,17 @@ class Connection:
                 "Both specified attributes for a connection must be instances of Variable."
             )
 
-        # Create the constraint equation in residual format (Source - Sink = 0)
-        # The overloaded __sub__ handles the EquationNode generation automatically
+        # Create the constraint expression in residual format (Source - Sink = 0)
+        # This natively handles N-Dimensional array subtraction thanks to NumPy
         expr = var_source() - var_sink()
 
-        new_eq = Equation(
-            name=f"{self.name}_{source_var_name}_to_{sink_var_name}",
-            description=f"Explicit link: {self.source_port.name}.{source_var_name} -> {self.sink_port.name}.{sink_var_name}",
-            fast_expr=expr,
-        )
-        self.equations.append(new_eq)
+        eq_name = f"{self.name}_{source_var_name}_to_{sink_var_name}"
+        desc = f"Explicit link: {self.source_port.name}.{source_var_name} -> {self.sink_port.name}.{sink_var_name}"
+        
+        self._pending_links.append((eq_name, desc, expr))
 
-        if cfg.VERBOSITY_LEVEL >= 2:
-            print(f"[DEBUG] Explicit connection generated: {new_eq.name}")
+        if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 2:
+            print(f"[DEBUG] Explicit connection generated: {eq_name}")
 
     def _generate_auto_connection_equations(self):
         """
@@ -101,36 +108,39 @@ class Connection:
                     var_sink = getattr(self.sink_port, attr_name)
 
                     if isinstance(var_sink, Variable):
-                        # Create the constraint equation (Source - Sink = 0)
+                        # Create the constraint expression (Source - Sink = 0)
                         expr = var_source() - var_sink()
 
-                        new_eq = Equation(
-                            name=f"{self.name}_{attr_name}_equality",
-                            description=f"Auto topological link for {attr_name}: {self.source_port.name} -> {self.sink_port.name}",
-                            fast_expr=expr,
-                        )
-                        self.equations.append(new_eq)
+                        eq_name = f"{self.name}_{attr_name}_equality"
+                        desc = f"Auto topological link for {attr_name}: {self.source_port.name} -> {self.sink_port.name}"
+                        
+                        self._pending_links.append((eq_name, desc, expr))
                         connected_count += 1
 
-                        if cfg.VERBOSITY_LEVEL >= 2:
-                            print(f"[DEBUG] Auto-connection generated: {new_eq.name}")
+                        if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 2:
+                            print(f"[DEBUG] Auto-connection generated: {eq_name}")
 
-        # Warning if an auto-connection finds zero matches (helps catch typos in large plants)
-        if connected_count == 0 and cfg.VERBOSITY_LEVEL >= 1:
+        # Warning if an auto-connection finds zero matches
+        if connected_count == 0 and getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
             print(
-                f"Warning: Connection '{self.name}' found no matching variables to auto-connect between '{self.source_port.name}' and '{self.sink_port.name}'."
+                f"Warning: Connection '{self.name}' found no matching variables "
+                f"to auto-connect between '{self.source_port.name}' and '{self.sink_port.name}'."
             )
 
     def apply_to(self, target_model):
         """
-        Injects the generated equality equations into a target model
-        (usually the Master Flowsheet).
-        """
-        for eq in self.equations:
-            target_model.equations[eq.name] = eq
-            setattr(target_model, eq.name, eq)
+        Injects the generated equality constraints into a target model 
+        (usually the Master Flowsheet). Delegates the instantiation to the target 
+        model to guarantee tensor-flattening safety.
 
-        if cfg.VERBOSITY_LEVEL >= 2:
+        :param Model target_model: The flowsheet receiving the topological constraints.
+        """
+        for eq_name, desc, expr in self._pending_links:
+            # Delegating to createEquation guarantees N-Dimensional safety
+            target_model.createEquation(name=eq_name, description=desc, expr=expr)
+
+        if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 2:
             print(
-                f"[DEBUG] Connection '{self.name}' successfully applied {len(self.equations)} topological constraints to '{target_model.name}'."
+                f"[DEBUG] Connection '{self.name}' successfully applied "
+                f"{len(self._pending_links)} topological constraints to '{target_model.name}'."
             )

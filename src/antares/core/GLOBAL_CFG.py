@@ -62,6 +62,11 @@ VERBOSITY_LEVEL = 1
 # to provide explicit initial guesses even for algebraic variables).
 STRICT_MODE = False
 
+# Controls the exhibition of loading bars for generation of the model equation and
+# their transpilation, in order to provide some visual output for the user. It is
+# particularlly useful for large simulations.
+SHOW_LOADING_BARS = True
+
 # =============================================================================
 # 4. PLOTTING & AESTHETICS
 # =============================================================================

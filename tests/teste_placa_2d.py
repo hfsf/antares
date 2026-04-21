@@ -79,37 +79,36 @@ if __name__ == "__main__":
     t_span = np.linspace(0, 18000, 200)
 
     # =============================================================================
-    # 3. EXECUÇÃO DA SIMULAÇÃO (COMPILAÇÃO NATIVA EM C)
+    # 3. EXECUÇÃO DA SIMULAÇÃO
     # =============================================================================
-    # Aqui ativamos o use_c_code=True. O ANTARES vai gerar código C para as 1600 equações!
+    # Otimização Ativada! Cuidado com compiladores lentos, pode passar use_c_code=False se necessário.
     simulador = Simulator(model=modelo)
     resultados = simulador.run(t_span, use_c_code=True)
 
     # =============================================================================
-    # 4. VISUALIZAÇÃO DINÂMICA
+    # 4. VISUALIZAÇÃO DINÂMICA (TOTALMENTE ABSTRAÍDA)
     # =============================================================================
     plotador = Plotter(resultados)
 
-    # Como o nosso Plotter atual ainda não extrai coordenadas (x,y) de matrizes 2D
-    # de forma automática, vamos buscar os nós cruciais pelo seu índice exato [i, j].
-    # Malha 40x40 -> Índices vão de 0 a 39.
+    # ADEUS STRINGS MÁGICAS: Agora extraímos os pontos da matriz 2D fornecendo as tuplas físicas (X, Y)
+    pontos_interesse = [
+        (0.5, 0.05), # Perto da base quente
+        (0.5, 0.5),  # Centro da placa
+        (1.0, 1.0)   # Canto isolado (Topo-Direita)
+    ]
     
-    no_centro = "T_Placa_Assimetrica_Placa_Matriz_20_20"
-    no_canto_isolado = "T_Placa_Assimetrica_Placa_Matriz_39_39" # Topo-Direita
-    no_perto_base = "T_Placa_Assimetrica_Placa_Matriz_20_2"     # Perto do calor
+    # Podemos continuar a passar o legend_labels para "forçar" um nome bonito, 
+    # ou deixar o Plotter gerar "Placa_Matriz(X=0.50, Y=0.50)" automaticamente.
+    # Vamos usar dicionários personalizados usando o método abstrato para não precisar saber o index da matriz.
+    # O Plotter gera nomes como "T_Placa_Assimetrica_Placa_Matriz_20_2" internamente, 
+    # mas para mantermos o código limpo, vamos deixar ele gerar as legendas automáticas, ou sobrescrever as colunas.
     
-    variaveis = [no_perto_base, no_centro, no_canto_isolado]
-    legendas = {
-        no_perto_base: "Perto da Base Quente (X=0.5, Y=0.05)",
-        no_centro: "Centro da Placa (X=0.5, Y=0.5)",
-        no_canto_isolado: "Canto Isolado (X=1.0, Y=1.0)"
-    }
-
     plotador.plot(
-        variables=variaveis,
+        variable=modelo.T,
+        domain=modelo.placa,
+        coordinates=pontos_interesse,
         title="Dinâmica de Aquecimento (Condução 2D)",
         xlabel="Tempo de Simulação (s)",
         ylabel="Temperatura (K)",
-        legend_labels=legendas,
         show=True
     )

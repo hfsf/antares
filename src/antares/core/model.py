@@ -19,6 +19,15 @@ from .parameter import Parameter
 from .print_headings import print_heading
 from .variable import Variable
 
+# Graceful import for tqdm
+try:
+    from tqdm.auto import tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
+    def tqdm(iterable, *args, **kwargs):
+        return iterable
+
 
 class Model:
     """
@@ -220,21 +229,18 @@ class Model:
         """
         Creates an Equation object and binds it to the model.
         Safely handles scalars, 1D arrays, and N-Dimensional tensors by flattening them.
-
-        :param str name: Unique identifier for the equation.
-        :param str description: Contextual description of the equation.
-        :param expr: SymPy expression, EquationNode, tuple, or an N-Dimensional NumPy array of these.
-        :type expr: EquationNode or tuple or list or np.ndarray
-        :return: The instantiated Equation object if a scalar is passed, else None.
-        :rtype: Equation or None
         """
-        # Flattens N-Dimensional arrays to ensure scalar evaluation
         if isinstance(expr, np.ndarray):
             expr = expr.flatten().tolist()
 
         if isinstance(expr, list):
-            for i, eq_expr in enumerate(expr):
-                # Recovers tuple format if passed linearly
+            # Barra de carregamento para geração massiva de equações
+            if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1 and HAS_TQDM and getattr(cfg, "SHOW_LOADING_BARS", True) :
+                iter_expr = tqdm(enumerate(expr), total=len(expr), desc=f"Compiling '{name}'", unit=" eq", leave=False)
+            else:
+                iter_expr = enumerate(expr)
+
+            for i, eq_expr in iter_expr:
                 if isinstance(eq_expr, np.ndarray) and eq_expr.shape == (2,):
                     eq_expr = tuple(eq_expr)
                 elif isinstance(eq_expr, list) and len(eq_expr) == 2:
@@ -289,17 +295,20 @@ class Model:
     def distributeVariable(self, variable, domain):
         """
         Discretizes the variable along the given domain and registers the resulting 
-        mathematical nodes in the model dictionary. Flattens N-Dimensional arrays automatically.
-
-        :param Variable variable: The variable to be distributed.
-        :param Domain domain: The spatial domain (1D, 2D, etc.) to distribute upon.
+        mathematical nodes. Flattens N-Dimensional arrays automatically.
         """
         variable.distributeOnDomain(domain)
 
         # Flatten the matrix to register each node properly
         flat_nodes = np.array(variable.discrete_nodes, dtype=object).flatten()
 
-        for node in flat_nodes:
+        # Barra de carregamento
+        if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1 and HAS_TQDM and getattr(cfg, "SHOW_LOADING_BARS", True):
+            iter_nodes = tqdm(flat_nodes, desc=f"Distributing '{variable.name}'", unit=" node", leave=False)
+        else:
+            iter_nodes = flat_nodes
+
+        for node in iter_nodes:
             node._owner_model_instance = self
             self.variables[node.name] = node
 

@@ -9,7 +9,6 @@ visualizations using matplotlib, pandas, and seaborn integration.
 """
 
 import warnings
-
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
@@ -35,10 +34,8 @@ class Plotter:
     def _apply_aesthetics(self):
         """
         Applies the global plotting configurations defined in GLOBAL_CFG.py.
-        Uses defensively getattr to avoid crashing if older configs are used.
         """
         use_seaborn = getattr(cfg, "USE_SEABORN_STYLE", True)
-
         if use_seaborn:
             sns.set_theme(
                 style=getattr(cfg, "SEABORN_THEME", "whitegrid"),
@@ -63,52 +60,73 @@ class Plotter:
         **kwargs,
     ):
         """
-        Plots temporal dynamics. Operates in two distinct modes:
-        1. Standard Mode: Pass a list of string names to `variables`.
-        2. Phenomenological Mode: Pass `variable`, `domain`, and a list of `coordinates` 
-           to automatically extract and plot specific spatial points.
+        Plots temporal dynamics. Safely combines lumped variables (0D) and 
+        phenomenological coordinate extraction for distributed domains (1D, 2D, 3D).
+
+        :param list variables: List of lumped variable names to plot (e.g., [tanque.h.name]).
+        :param Variable variable: The distributed state variable to extract points from.
+        :param Domain domain: The spatial domain (Domain1D, Domain2D, or Domain3D).
+        :param list coordinates: List of floats (1D) or tuples (2D/3D) representing physical coordinates.
+        :param str title: Optional title for the figure.
+        :param str xlabel: Custom label for the X-axis.
+        :param str ylabel: Custom label for the Y-axis.
+        :param dict legend_labels: Dictionary to rename specific variable lines in the legend.
+        :param bool show: Whether to trigger the interactive plot window.
+        :param str save_path: If provided, saves the resulting figure.
+        :return: The matplotlib Axes object.
+        :rtype: matplotlib.axes.Axes
         """
         self._apply_aesthetics()
 
         vars_to_plot = []
         auto_legends = {}
 
-        # MODE 1: Standard String-Based Extraction
+        # 1. Adds Lumped/Direct Variables if provided
         if variables is not None:
-            vars_to_plot = [v for v in variables]
-            if legend_labels:
-                auto_legends.update(legend_labels)
+            vars_to_plot.extend(variables)
 
-        # MODE 2: Phenomenological Coordinate-Based Extraction
-        elif variable is not None and domain is not None and coordinates is not None:
+        # 2. Automatically extracts N-Dimensional nodes based on physical coordinates
+        if variable is not None and domain is not None and coordinates is not None:
             if not getattr(variable, "is_distributed", False):
                 raise TypeError(f"Variable '{variable.name}' must be distributed to plot by coordinates.")
 
-            grid = domain.grid
             for coord in coordinates:
-                if coord < np.min(grid) or coord > np.max(grid):
-                    raise ValueError(
-                        f"Coordinate {coord} is out of domain bounds "
-                        f"[{np.min(grid)}, {np.max(grid)}]."
-                    )
+                # 3D Domain Extraction
+                if hasattr(domain, 'x') and hasattr(domain, 'y') and hasattr(domain, 'z'):
+                    cx, cy, cz = coord
+                    ix = int(np.argmin(np.abs(domain.x.grid - cx)))
+                    iy = int(np.argmin(np.abs(domain.y.grid - cy)))
+                    iz = int(np.argmin(np.abs(domain.z.grid - cz)))
+                    ax, ay, az = domain.x.grid[ix], domain.y.grid[iy], domain.z.grid[iz]
+                    node_name = variable.discrete_nodes[ix, iy, iz].name
+                    label = f"{domain.name}(X={ax:.2f}, Y={ay:.2f}, Z={az:.2f})"
+                
+                # 2D Domain Extraction
+                elif hasattr(domain, 'x') and hasattr(domain, 'y'):
+                    cx, cy = coord
+                    ix = int(np.argmin(np.abs(domain.x.grid - cx)))
+                    iy = int(np.argmin(np.abs(domain.y.grid - cy)))
+                    ax, ay = domain.x.grid[ix], domain.y.grid[iy]
+                    node_name = variable.discrete_nodes[ix, iy].name
+                    label = f"{domain.name}(X={ax:.2f}, Y={ay:.2f})"
+                
+                # 1D Domain Extraction
+                elif hasattr(domain, 'grid'):
+                    ix = int(np.argmin(np.abs(domain.grid - coord)))
+                    ax = domain.grid[ix]
+                    node_name = variable.discrete_nodes[ix].name
+                    label = f"{domain.name}={ax:.2f} {domain.unit.name}"
+                else:
+                    raise TypeError("Unsupported domain type for coordinate extraction.")
 
-                idx = int(np.argmin(np.abs(grid - coord)))
-                actual_coord = grid[idx]
-
-                node_name = variable.discrete_nodes[idx].name
                 vars_to_plot.append(node_name)
+                auto_legends[node_name] = label
 
-                if legend_labels is None:
-                    auto_legends[node_name] = f"{domain.name} = {actual_coord:.2f} {domain.unit.name}"
-            
-            if legend_labels:
-                auto_legends.update(legend_labels)
+        if legend_labels:
+            auto_legends.update(legend_labels)
 
-        else:
-            raise ValueError(
-                "Plotter Error: Provide either 'variables' (list of strings) OR "
-                "('variable', 'domain', and 'coordinates') to plot."
-            )
+        if not vars_to_plot:
+            raise ValueError("Plotter Error: Provide either 'variables' or ('variable', 'domain', 'coordinates').")
 
         # VALIDATION & RENDERING
         valid_vars = []

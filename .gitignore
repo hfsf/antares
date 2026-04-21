@@ -9,6 +9,9 @@
 #Art
 /logo_ascii
 
+#Implementatio TODOs
+*.todo
+
 #Compiled and backup files
 *.pyc
 *.backup
@@ -23,6 +26,9 @@ __pycache__/
 
 # C extensions
 *.so
+*.o
+# Casadi C-compiled code
+*.c 
 
 # Distribution / packaging
 .Python
