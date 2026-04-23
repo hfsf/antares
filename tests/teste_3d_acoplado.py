@@ -102,7 +102,7 @@ if __name__ == "__main__":
     t_span = np.linspace(0, 15, 60)
 
     simulador = Simulator(model=planta)
-    resultados = simulador.run(t_span, linear_solver="iterative", use_c_code=True)
+    resultados = simulador.run(t_span, linear_solver="iterative", use_c_code=False)
 
     # =============================================================================
     # 4. VISUALIZAÇÃO PONTUAL (TOTALMENTE ABSTRAÍDA)

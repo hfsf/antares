@@ -114,17 +114,28 @@ class Simulator:
     def _resolve_linear_solver(self, requested_solver):
         """
         Translates generic ANTARES intents ('direct', 'iterative') into
-        exact CasADi C++ plugin names, keeping the framework generalist.
+        exact CasADi C++ plugin names, applying safe fallbacks for missing libraries.
         """
-        solver_map = {"direct": "csparse", "iterative": "gmres"}
-        return solver_map.get(requested_solver.lower(), requested_solver.lower())
+        req = requested_solver.lower()
+        if req == "iterative":
+            # O CasADi em Python geralmente não traz o gmres pré-compilado.
+            if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
+                print(
+                    "\n[ANTARES WARNING] The iterative linear solver plugin ('gmres') is missing from your "
+                    "CasADi distribution. Safely falling back to the 'csparse' direct solver, "
+                    "which is highly optimized for N-Dimensional sparse matrices.\n"
+                )
+            return "csparse"
+        elif req == "direct":
+            return "csparse"
+
+        return req
 
     def _compile_integrator(self, t_span, use_c_code=False, linear_solver="direct"):
         if self._integrator is None or not np.array_equal(t_span, self._last_t_span):
             opts = self.solver_opts.copy()
             t0 = t_span[0]
 
-            # Aplica o Mapeamento Inteligente
             opts["linear_solver"] = self._resolve_linear_solver(linear_solver)
 
             if use_c_code:
@@ -190,8 +201,6 @@ class Simulator:
             problem = {"x": v, "p": p, "g": eqs}
 
             opts = {"abstol": getattr(cfg, "DEFAULT_ABSOLUTE_TOLERANCE", 1e-8)}
-
-            # Aplica o Mapeamento Inteligente
             opts["linear_solver"] = self._resolve_linear_solver(linear_solver)
 
             if use_c_code:
