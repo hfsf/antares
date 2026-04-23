@@ -7,7 +7,7 @@ Defines the Simulator class.
 Receives the phenomenological model, calls the CasadiTranspiler, and solves
 the Differential-Algebraic Equation (DAE) system over time using CasADi's
 native integrators, or resolves steady-state conditions using rootfinders.
-V4 UPDATE: Fully integrated with Block Vectorization arrays.
+V4 UPDATE: Fully integrated with Block Vectorization arrays and Smart Solver Mapping.
 """
 
 import glob
@@ -111,13 +111,21 @@ class Simulator:
             )
             raise DegreesOfFreedomError(msg)
 
+    def _resolve_linear_solver(self, requested_solver):
+        """
+        Translates generic ANTARES intents ('direct', 'iterative') into
+        exact CasADi C++ plugin names, keeping the framework generalist.
+        """
+        solver_map = {"direct": "csparse", "iterative": "gmres"}
+        return solver_map.get(requested_solver.lower(), requested_solver.lower())
+
     def _compile_integrator(self, t_span, use_c_code=False, linear_solver="direct"):
         if self._integrator is None or not np.array_equal(t_span, self._last_t_span):
             opts = self.solver_opts.copy()
             t0 = t_span[0]
 
-            if linear_solver.lower() == "iterative":
-                opts["linear_solver"] = "iterative"
+            # Aplica o Mapeamento Inteligente
+            opts["linear_solver"] = self._resolve_linear_solver(linear_solver)
 
             if use_c_code:
                 opts["jit"] = True
@@ -182,8 +190,9 @@ class Simulator:
             problem = {"x": v, "p": p, "g": eqs}
 
             opts = {"abstol": getattr(cfg, "DEFAULT_ABSOLUTE_TOLERANCE", 1e-8)}
-            if linear_solver.lower() == "iterative":
-                opts["linear_solver"] = "iterative"
+
+            # Aplica o Mapeamento Inteligente
+            opts["linear_solver"] = self._resolve_linear_solver(linear_solver)
 
             if use_c_code:
                 opts["jit"] = True

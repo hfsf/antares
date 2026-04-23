@@ -5,6 +5,8 @@ Global Configuration File for the ANTARES framework.
 Contains environment variables, default behaviors, and strictness flags.
 Users can modify these values to change the framework's global behavior
 without altering the core architectural files.
+
+V4 UPDATE: Removed legacy SymPy chunking configs and added Linear Solver delegation.
 """
 
 # =============================================================================
@@ -31,6 +33,15 @@ PERFORM_DOF_CHECK = True
 # 'idas' is highly recommended for stiff DAE systems. 'cvodes' for simple ODEs.
 DEFAULT_INTEGRATOR = "idas"
 
+# Defines the default linear solver for the Newton-Raphson iterations inside
+# the integrators (IDAS) and rootfinders (KINSOL).
+# Options:
+# - "direct": Uses the CasADi native sparse direct solver (csparse).
+#             Extremely fast for 1D/2D meshes and moderately sized 3D meshes (N < 50k).
+# - "iterative": Uses Krylov subspace methods (GMRES via SUNDIALS) without exact Jacobian.
+#                Mandatory for massive 3D meshes (> 100k nodes) to prevent RAM exhaustion.
+DEFAULT_LINEAR_SOLVER = "direct"
+
 # If True, CasADi will translate the mathematical graph into pure C code,
 # compile it in the background using GCC/Clang, and inject the shared library
 # into the solver. This yields maximum execution speed but requires a C compiler
@@ -38,16 +49,18 @@ DEFAULT_INTEGRATOR = "idas"
 USE_C_CODE_COMPILATION = False
 
 # Define C compilation optimization. Set to "aggressive" for maximum optimization
-# and slow compilation time, or "basic" for default  optimization for fast compilation
+# and slow compilation time, or "basic" for default optimization for fast compilation
 # time, using RAM to store temporary files during compilation
-C_COMPILATION_OPTIMIZATION_LEVEL = "basic" #aggressive 
+C_COMPILATION_OPTIMIZATION_LEVEL = "basic"  # aggressive
 
 # Keep the files related to C compilation after simulation. It is useful
 # for generated code depuration
 KEEP_TEMPORARY_COMPILATION_FILES = False
 
 # Default numerical tolerances for the CasADi integrators and rootfinders.
-# Tighten these (e.g., 1e-8 / 1e-10) for highly non-linear or sensitive systems.
+# For lumped (0D) systems, 1e-6/1e-8 is standard.
+# For heavily distributed 3D PDEs, relaxing to 1e-4/1e-5 is recommended to drastically
+# reduce simulation time without meaningful loss of physical accuracy.
 DEFAULT_RELATIVE_TOLERANCE = 1e-6
 DEFAULT_ABSOLUTE_TOLERANCE = 1e-8
 
@@ -68,7 +81,7 @@ STRICT_MODE = False
 
 # Controls the exhibition of loading bars for generation of the model equation and
 # their transpilation, in order to provide some visual output for the user. It is
-# particularlly useful for large simulations.
+# particularly useful for large simulations.
 SHOW_LOADING_BARS = True
 
 # =============================================================================
@@ -94,8 +107,8 @@ PLOT_LINEWIDTH = 2.5
 
 # Specific visual markers for spatial profiles and discrete data points.
 PLOT_PRIMARY_COLOR = "#d55e00"  # Vermillion (Colorblind safe default)
-PLOT_MARKER = "o"               # Standard circle marker
-PLOT_MARKERSIZE = 8             # Standard size of the markers
+PLOT_MARKER = "o"  # Standard circle marker
+PLOT_MARKERSIZE = 8  # Standard size of the markers
 
 # Configurations for heatmaps (2D) and 3D slicing (3D)
 PLOT_COLORMAP_HEAT = "inferno"
