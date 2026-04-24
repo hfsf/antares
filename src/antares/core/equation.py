@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 
 """
-Define the Equation class for the ANTARES framework.
-Acts as a passive container that stores the symbolic expression tree (SymPy)
-for subsequent transpilation to the CasADi backend.
+Equation Module (V5 Native CasADi Architecture).
+
+Defines the Equation class for the ANTARES framework.
+In V5, this class acts as a lightweight, passive container that stores
+the pre-validated CasADi MX expression tree (wrapped in an EquationNode).
+It eliminates legacy SymPy overhead, AST sweeping, and string-based substitutions.
 """
 
 import uuid
-
-import sympy as sp
 
 import antares.core.GLOBAL_CFG as cfg
 
@@ -18,7 +19,10 @@ from .expression_evaluation import EquationNode
 
 def _generate_unique_id():
     """
-    Generates a unique short string identifier for unnamed equations or constants.
+    Generates a unique short string identifier for unnamed equations.
+
+    :return: A random 8-character hexadecimal string.
+    :rtype: str
     """
     return uuid.uuid4().hex[:8]
 
@@ -26,7 +30,8 @@ def _generate_unique_id():
 class Equation:
     """
     Definition of the Equation class.
-    Maintains the mathematical expression in residual form (f(x) = 0).
+    Maintains the mathematical expression strictly in residual form (f(x) = 0),
+    holding the native CasADi computational graph.
     """
 
     def __init__(self, name, description="", fast_expr=None, owner_model_name=""):
@@ -34,7 +39,7 @@ class Equation:
         Initializes the Equation object.
 
         :param str name: Name of the equation. If empty, a unique ID is assigned.
-        :param str description: Short description of the equation.
+        :param str description: Short physical description of the equation.
         :param fast_expr: The mathematical expression (EquationNode or Tuple).
         :param str owner_model_name: The name of the model that owns this equation.
         """
@@ -48,8 +53,9 @@ class Equation:
         # Mathematical classification: 'algebraic' or 'differential'
         self.type = None
 
-        # Dictionary storing all symbolic objects present in this equation
-        self.objects_declared = {}
+        # Attributes dynamically populated by the Master Model for PDE vectorization
+        self.is_distributed = False
+        self.flat_indices = None
 
         if fast_expr is not None:
             self.setResidual(fast_expr)
@@ -57,91 +63,51 @@ class Equation:
     def _getTypeFromExpression(self):
         """
         Determines whether the equation is Differential or Algebraic based on
-        the flags stored in the underlying expression tree.
-        CasADi DAE solvers do not require linear/nonlinear distinctions.
+        the pre-calculated flags stored in the underlying EquationNode.
+        CasADi DAE solvers route equations based on this classification.
         """
         if self.equation_expression.equation_type.get("is_differential", False):
             self.type = "differential"
         else:
             self.type = "algebraic"
 
-    def _sweepObjects(self):
-        """
-        Maps all symbolic objects declared in the equation.
-        This is an essential mapping step for the Transpiler.
-        """
-        self.objects_declared = {**self.equation_expression.symbolic_map}
-
     def setResidual(self, equation_expression):
         """
         Ensures the mathematical expression is stored in the residual
-        format (f(x) = 0), resolving tuples and constant integers/floats.
+        format (f(x) = 0). It dynamically handles native residual EquationNodes
+        or elemental equality tuples, delegating physical unit checks to the nodes.
 
         :param equation_expression: Can be an EquationNode directly or a
                                     tuple (LHS, RHS) representing equality.
+        :raises UnexpectedValueError: If the expression format is incompatible.
         """
         if isinstance(equation_expression, tuple):
             # The equation was passed in elemental format: (LHS, RHS)
             lhs, rhs = equation_expression
 
-            if isinstance(rhs, (float, int)):
-                # If RHS is a pure number, convert it to an EquationNode
-                # It inherently inherits the LHS unit for dimensional safety
-                rhs_node = EquationNode(
-                    name=f"constant_{_generate_unique_id()}",
-                    symbolic_object=rhs,
-                    unit_object=lhs.unit_object,
-                    repr_symbolic=rhs,
-                )
-                self.equation_expression = lhs - rhs_node
-
-            elif isinstance(rhs, EquationNode):
-                # If both are nodes, subtract to form the residual.
-                # The overloaded '-' operator handles dimensional coherence checks.
+            if isinstance(rhs, (float, int, EquationNode)):
+                # The overloaded '-' operator in EquationNode safely handles
+                # unit coherence checks and native CasADi MX subtractions.
                 self.equation_expression = lhs - rhs
             else:
-                raise UnexpectedValueError("RHS must be a float, int, or EquationNode.")
+                raise UnexpectedValueError(
+                    "Equation RHS must be a float, int, or EquationNode."
+                )
 
         elif isinstance(equation_expression, EquationNode):
-            # The equation was already passed in residual format
+            # The equation was naturally passed in residual format
+            # (e.g., via the overloaded '==' operator yielding self - other)
             self.equation_expression = equation_expression
+
         else:
             raise UnexpectedValueError(
                 "Expected an EquationNode or tuple(EquationNode, float|int|EquationNode)."
             )
 
-        # Update metadata
-        self._sweepObjects()
+        # Update core mathematical classification
         self._getTypeFromExpression()
 
-        if cfg.VERBOSITY_LEVEL >= 2:
+        if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 2:
             print(
-                f"[DEBUG] Equation '{self.name}' successfully parsed as a {self.type} equation."
+                f"[DEBUG] Equation '{self.name}' successfully mounted as a {self.type} block."
             )
-
-    def _convertEquationSymbolicExpression(self, names_map, whole_obj_map):
-        """
-        Translates internal SymPy symbols during model composition/incorporation.
-        This renames variables to prevent namespace collisions when multiple
-        sub-models are flattened into a Master Flowsheet.
-
-        :param dict names_map: Mapping of {old_symbol: new_symbol}.
-        :param dict whole_obj_map: Mapping of {symbol_name: Quantity_object}.
-        """
-        self.equation_expression.repr_symbolic = (
-            self.equation_expression.repr_symbolic.subs(names_map)
-        )
-        self.equation_expression.symbolic_object = (
-            self.equation_expression.symbolic_object.subs(names_map)
-        )
-
-        # Re-map the active symbols based on the new expression tree
-        symbols_used = [
-            str(i) for i in list(self.equation_expression.repr_symbolic.free_symbols)
-        ]
-        new_symbolic_map = {
-            k: whole_obj_map[k] for k in symbols_used if k in whole_obj_map
-        }
-
-        self.equation_expression.symbolic_map = new_symbolic_map
-        self._sweepObjects()

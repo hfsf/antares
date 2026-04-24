@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 
 """
-Plotter Module.
+Plotter Module (V5 Native CasADi Architecture).
 
 Provides high-level plotting utilities for the ANTARES framework.
 Interacts directly with the Results object to generate publication-quality
 visualizations using matplotlib, pandas, and seaborn integration.
-Supports 0D dynamics, 1D spatial profiles, 2D heatmaps, and 3D cross-section slicing.
+Fully aligned with the V5 block-tensor naming topology for 0D dynamics,
+1D spatial profiles, 2D heatmaps, and 3D cross-section slicing.
 """
 
 import warnings
@@ -20,14 +21,15 @@ import antares.core.GLOBAL_CFG as cfg
 
 class Plotter:
     """
-    Definition of Plotter class. Handles simulation data visualization
-    with professional aesthetics, automatic steady-state detection, and
-    multidimensional array slicing.
+    Definition of the Plotter class.
+    Handles simulation data visualization with professional aesthetics,
+    automatic steady-state detection, and multidimensional array slicing
+    based on the V5 flattened tensor coordinates.
     """
 
     def __init__(self, results_obj):
         """
-        Initialize the Plotter with a Results object.
+        Initializes the Plotter with a structured Results object.
 
         :param Results results_obj: The results container object holding the
                                     simulation history and metadata.
@@ -35,7 +37,10 @@ class Plotter:
         self.results = results_obj
 
     def _apply_aesthetics(self):
-        """Applies the global plotting configurations defined in GLOBAL_CFG.py."""
+        """
+        Applies the global plotting configurations defined in GLOBAL_CFG.py.
+        Triggers seaborn themes if globally enabled.
+        """
         use_seaborn = getattr(cfg, "USE_SEABORN_STYLE", True)
         if use_seaborn:
             sns.set_theme(
@@ -47,7 +52,16 @@ class Plotter:
             sns.reset_orig()
 
     def _resolve_time_index(self, time=None, time_index=-1):
-        """Helper to safely extract the index of the requested simulation time."""
+        """
+        Helper to safely extract the discrete integer index of the requested
+        simulation physical time.
+
+        :param float time: Specific physical time to fetch.
+        :param int time_index: Direct index of the temporal array (defaults to last: -1).
+        :return: Integer index of the time grid.
+        :rtype: int
+        :raises ValueError: If the requested time is out of the simulation bounds.
+        """
         time_grid = self.results.history.index.values
         if time is not None:
             if time < np.min(time_grid) or time > np.max(time_grid):
@@ -75,6 +89,19 @@ class Plotter:
         Plots temporal dynamics. Safely combines lumped variables (0D) and
         phenomenological coordinate extraction for distributed domains (1D, 2D, 3D).
         Auto-detects Steady-State results to plot markers instead of invisible lines.
+
+        :param list variables: List of explicit string names of 0D variables to plot.
+        :param Variable variable: Target distributed Variable object (1D/2D/3D).
+        :param Domain domain: The domain object containing the geometry.
+        :param list coordinates: Physical coordinates to extract temporal profiles from.
+        :param str title: Plot title.
+        :param str xlabel: Custom X-axis label.
+        :param str ylabel: Custom Y-axis label.
+        :param dict legend_labels: Dictionary mapping variable names to custom legend strings.
+        :param bool show: Whether to render the plot interactively.
+        :param str save_path: System path to export the figure.
+        :return: The generated matplotlib axis object.
+        :rtype: matplotlib.axes.Axes
         """
         self._apply_aesthetics()
 
@@ -94,27 +121,32 @@ class Plotter:
                     and hasattr(domain, "y")
                     and hasattr(domain, "z")
                 ):
+                    # 3D Extraction
                     cx, cy, cz = coord
                     ix = int(np.argmin(np.abs(domain.x.grid - cx)))
                     iy = int(np.argmin(np.abs(domain.y.grid - cy)))
                     iz = int(np.argmin(np.abs(domain.z.grid - cz)))
                     ax, ay, az = domain.x.grid[ix], domain.y.grid[iy], domain.z.grid[iz]
-                    idx_str = "_".join(map(str, (ix, iy, iz)))  # <--- NOVO V4
+                    idx_str = f"{ix}_{iy}_{iz}"
                     node_name = f"{variable.name}_{domain.name}_{idx_str}"
                     label = f"{domain.name}(X={ax:.2f}, Y={ay:.2f}, Z={az:.2f})"
 
                 elif hasattr(domain, "x") and hasattr(domain, "y"):
+                    # 2D Extraction
                     cx, cy = coord
                     ix = int(np.argmin(np.abs(domain.x.grid - cx)))
                     iy = int(np.argmin(np.abs(domain.y.grid - cy)))
                     ax, ay = domain.x.grid[ix], domain.y.grid[iy]
-                    node_name = variable.discrete_nodes[ix, iy].name
+                    idx_str = f"{ix}_{iy}"
+                    node_name = f"{variable.name}_{domain.name}_{idx_str}"
                     label = f"{domain.name}(X={ax:.2f}, Y={ay:.2f})"
 
                 elif hasattr(domain, "grid"):
+                    # 1D Extraction
                     ix = int(np.argmin(np.abs(domain.grid - coord)))
                     ax = domain.grid[ix]
-                    node_name = variable.discrete_nodes[ix].name
+                    idx_str = f"{ix}"
+                    node_name = f"{variable.name}_{domain.name}_{idx_str}"
                     label = f"{domain.name}={ax:.2f} {domain.unit.name}"
                 else:
                     raise TypeError(
@@ -200,7 +232,20 @@ class Plotter:
         save_path=None,
         **kwargs,
     ):
-        """Generates a spatial profile plot for a 1D distributed variable."""
+        """
+        Generates a spatial profile plot for a 1D distributed variable along
+        the geometry at specified time steps.
+
+        :param Variable variable: Target 1D distributed state variable.
+        :param Domain1D domain: The spatial 1D domain object.
+        :param float|list time: Specific physical time(s) to render.
+        :param int|list time_index: Explicit temporal array index(es) to render.
+        :param str title: Plot title.
+        :param str xlabel: Custom X-axis label.
+        :param str ylabel: Custom Y-axis label.
+        :return: The generated matplotlib axis object.
+        :rtype: matplotlib.axes.Axes
+        """
         self._apply_aesthetics()
 
         if not getattr(variable, "is_distributed", False):
@@ -227,7 +272,11 @@ class Plotter:
             )
             indices_to_plot.extend(idx_list)
 
-        node_names = [node.name for node in variable.discrete_nodes]
+        # V5 String Mapping Generation
+        node_names = [
+            f"{variable.name}_{domain.name}_{i}" for i in range(domain.n_points)
+        ]
+
         fig, ax = plt.subplots(
             figsize=kwargs.pop("figsize", getattr(cfg, "PLOT_FIGSIZE", (10, 6)))
         )
@@ -290,7 +339,10 @@ class Plotter:
         :param Variable variable: The 2D distributed state variable.
         :param Domain2D domain: The spatial domain.
         :param float time: Specific simulation time to plot.
-        :param str cmap: Colormap (defaults to GLOBAL_CFG settings based on unit).
+        :param int time_index: Explicit temporal array index to render.
+        :param str cmap: Colormap string identifier (e.g., 'inferno', 'viridis').
+        :return: The generated matplotlib axis object.
+        :rtype: matplotlib.axes.Axes
         """
         self._apply_aesthetics()
 
@@ -304,16 +356,10 @@ class Plotter:
         X, Y = domain.X_grid, domain.Y_grid
         matrix = np.zeros((Nx, Ny))
 
-        # Vectorized extraction
+        # Vectorized V5 Topolgy Extraction (Fixed Axis Bug)
         for i in range(Nx):
             for j in range(Ny):
-                if axis == "x":
-                    idx_str = f"{slice_idx}_{i}_{j}"
-                elif axis == "y":
-                    idx_str = f"{i}_{slice_idx}_{j}"
-                else:
-                    idx_str = f"{i}_{j}_{slice_idx}"
-
+                idx_str = f"{i}_{j}"
                 node_name = f"{variable.name}_{domain.name}_{idx_str}"
                 matrix[i, j] = self.results.history.iloc[idx][node_name]
 
@@ -381,6 +427,9 @@ class Plotter:
         :param Domain3D domain: The 3D spatial domain.
         :param str slice_axis: The axis normal to the slice plane ('x', 'y', or 'z').
         :param float slice_coord: The physical coordinate to slice at. Defaults to the center.
+        :param float time: Specific simulation time to plot.
+        :return: The generated matplotlib axis object.
+        :rtype: matplotlib.axes.Axes
         """
         self._apply_aesthetics()
 

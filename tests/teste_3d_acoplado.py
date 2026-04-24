@@ -28,7 +28,7 @@ class CuboDispersao(Model):
         self()
 
     def DeclareVariables(self):
-        N = 25
+        N = 100
         L = 2.0
         self.eixo_x = self.createDomain("X", unit=m, length=L, n_points=N)
         self.eixo_y = self.createDomain("Y", unit=m, length=L, n_points=N)

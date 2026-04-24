@@ -1,67 +1,77 @@
 # -*- coding: utf-8 -*-
 
 """
-ANTARES Transpiler Module.
+DaeAssembler Module (Legacy name: Transpiler) - V5 Native CasADi Architecture.
 
-V4 UPDATE: Vectorial Transpiler.
-Translates mathematical block tensors into native CasADi symbolic vectors,
-injecting finite difference Sparse Matrices dynamically and fully bypassing
-the Scalar Unrolling graph explosion. Fully shielded against SymPy-CasADi type conflicts.
+In the V5 Architecture, the concept of "transpilation" is technically obsolete.
+Equations are already constructed as native CasADi MX graphs within the Model.
+This module acts as an Assembler: it gathers the native graphs, maps topologies,
+automatically isolates the Jacobian for ODEs, and concatenates the final DAE
+system for the SUNDIALS integrators.
 """
 
 import casadi as ca
 import numpy as np
-import scipy.sparse as sps
-import sympy as sp
 
 import antares.core.GLOBAL_CFG as cfg
-from antares.core.error_definitions import UnexpectedValueError
-
-try:
-    from tqdm.auto import tqdm
-
-    HAS_TQDM = True
-except ImportError:
-    HAS_TQDM = False
-
-    def tqdm(iterable, *args, **kwargs):
-        return iterable
-
-
-if getattr(cfg, "SHOW_LOADING_BARS", True) is False:
-    HAS_TQDM = False
 
 
 class CasadiTranspiler:
-    def __init__(self, model):
-        self.model = model
-        self.sym_map = {}
+    """
+    System Assembler (Maintained as CasadiTranspiler for API backward compatibility).
+    Assembles the pre-compiled CasADi graphs, applies topological slicing, and
+    uses exact Jacobian linear algebra to isolate time derivatives.
+    """
 
+    def __init__(self, model):
+        """
+        Initializes the Assembler with the formulated mathematical model.
+
+        :param Model model: The fully declared ANTARES Model.
+        """
+        self.model = model
+
+        # CasADi core vectors for the solver
         self.x_vars = []
         self.z_vars = []
         self.p_vars = []
+
+        # Order tracking to ensure strict block alignment
         self.x_names_order = []
 
         self.dae_dict = {}
         self.distributed_var_objects_list = []
 
     def transpile(self):
-        """Executes the Vectorial Translation Engine."""
+        """
+        Executes the Native Graph Assembly Engine.
+
+        :return: A dictionary containing the structured DAE system (x, z, p, ode, alg).
+        :rtype: dict
+        """
         if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
             print(
-                f"\n[ANTARES TRANSPILER V4] Starting Block Vectorization for '{self.model.name}'..."
+                f"\n[ANTARES V5 ASSEMBLER] Compiling DAE System for '{self.model.name}'..."
             )
 
-        self._map_variables_and_parameters()
-        self._translate_equations()
+        self._map_and_assemble_topology()
+        self._isolate_and_concatenate_graphs()
 
         if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
-            print(f"[ANTARES TRANSPILER V4] Setup finished successfully.\n")
+            print(f"[ANTARES V5 ASSEMBLER] System closed and assembled successfully.\n")
 
         return self.dae_dict
 
-    def _map_variables_and_parameters(self):
-        """Maps distributed arrays directly to MX sparse vectors avoiding loop unpacking."""
+    def _map_and_assemble_topology(self):
+        """
+        Generates the exact solver variables (x, z, p) based on topological rules.
+        Builds the substitution mapping lists to bind the Model's monolithic
+        variables into the partitioned DAE arrays.
+        """
+        self.old_syms = []
+        self.new_syms = []
+
+        # 1. Map Variables
         for var_name, var_obj in self.model.variables.items():
             if getattr(var_obj, "is_distributed", False):
                 n_points = var_obj.n_points
@@ -77,165 +87,54 @@ class CasadiTranspiler:
                 var_obj.idx_alg = idx_alg
 
                 C_full = ca.MX.zeros(n_points)
+
                 if idx_diff:
                     C_x = ca.MX.sym(var_name + "_x", len(idx_diff))
                     self.x_vars.append(C_x)
                     self.x_names_order.append(var_name)
                     C_full[idx_diff] = C_x
 
-                    C_dot_full = ca.MX.zeros(n_points)
-                    C_x_dot = ca.MX.sym(var_name + "_dot", len(idx_diff))
-                    C_dot_full[idx_diff] = C_x_dot
-                    self.sym_map[sp.Symbol(var_name + "_dot")] = C_dot_full
-
                 if idx_alg:
                     C_z = ca.MX.sym(var_name + "_z", len(idx_alg))
                     self.z_vars.append(C_z)
                     C_full[idx_alg] = C_z
 
-                # Fix V4: Força a amarração correta do nome exato do modelo!
-                self.sym_map[sp.Symbol(var_name)] = C_full
+                self.old_syms.append(var_obj.symbolic_object)
+                self.new_syms.append(C_full)
                 self.distributed_var_objects_list.append(var_obj)
             else:
-                ca_sym = ca.MX.sym(var_name)
-                # Fix V4: Força a amarração correta do nome exato do modelo!
-                self.sym_map[sp.Symbol(var_name)] = ca_sym
-
                 if var_obj.type == "differential":
+                    ca_sym = ca.MX.sym(var_name + "_x")
                     self.x_vars.append(ca_sym)
                     self.x_names_order.append(var_name)
-                    self.sym_map[sp.Symbol(var_name + "_dot")] = ca.MX.sym(
-                        var_name + "_dot"
-                    )
                 else:
+                    ca_sym = ca.MX.sym(var_name + "_z")
                     self.z_vars.append(ca_sym)
 
+                self.old_syms.append(var_obj.symbolic_object)
+                self.new_syms.append(ca_sym)
+
+        # 2. Map Parameters
         for par_name, par_obj in self.model.parameters.items():
-            ca_sym = ca.MX.sym(par_name)
-            self.sym_map[sp.Symbol(par_name)] = ca_sym
-            self.p_vars.append(ca_sym)
+            p_sym = ca.MX.sym(par_name)
+            self.p_vars.append(p_sym)
 
+            if hasattr(par_obj, "symbolic_object"):
+                self.old_syms.append(par_obj.symbolic_object)
+                self.new_syms.append(p_sym)
+
+        # 3. Map Constants
         for const_name, const_obj in self.model.constants.items():
-            self.sym_map[sp.Symbol(const_name)] = const_obj.value
+            if hasattr(const_obj, "symbolic_object"):
+                self.old_syms.append(const_obj.symbolic_object)
+                self.new_syms.append(ca.MX(const_obj.value))
 
-    # =========================================================================
-    # MATRIX DELEGATION GENERATORS
-    # =========================================================================
-
-    def _scipy_to_casadi(self, mat):
-        mat = mat.tocsc()
-        colind = mat.indptr.astype(int).tolist()
-        row = mat.indices.astype(int).tolist()
-        data = mat.data.tolist()
-        sparsity = ca.Sparsity(mat.shape[0], mat.shape[1], colind, row)
-        return ca.DM(sparsity, data)
-
-    def _build_laplacian_sparse(self, dom_obj):
-        if hasattr(dom_obj, "z"):
-            Lx, Ly, Lz = (
-                sps.csr_matrix(dom_obj.x.B_matrix),
-                sps.csr_matrix(dom_obj.y.B_matrix),
-                sps.csr_matrix(dom_obj.z.B_matrix),
-            )
-            Ix, Iy, Iz = (
-                sps.eye(dom_obj.x.n_points),
-                sps.eye(dom_obj.y.n_points),
-                sps.eye(dom_obj.z.n_points),
-            )
-            return (
-                sps.kron(sps.kron(Lx, Iy), Iz)
-                + sps.kron(sps.kron(Ix, Ly), Iz)
-                + sps.kron(sps.kron(Ix, Iy), Lz)
-            )
-        elif hasattr(dom_obj, "y"):
-            Lx, Ly = (
-                sps.csr_matrix(dom_obj.x.B_matrix),
-                sps.csr_matrix(dom_obj.y.B_matrix),
-            )
-            Ix, Iy = sps.eye(dom_obj.x.n_points), sps.eye(dom_obj.y.n_points)
-            return sps.kron(Lx, Iy) + sps.kron(Ix, Ly)
-        return sps.csr_matrix(dom_obj.B_matrix)
-
-    def _build_gradient_sparse(self, dom_obj, axis_name=None):
-        if hasattr(dom_obj, "z"):
-            Ix, Iy, Iz = (
-                sps.eye(dom_obj.x.n_points),
-                sps.eye(dom_obj.y.n_points),
-                sps.eye(dom_obj.z.n_points),
-            )
-            if axis_name == dom_obj.x.name:
-                return sps.kron(sps.kron(sps.csr_matrix(dom_obj.x.A_matrix), Iy), Iz)
-            elif axis_name == dom_obj.y.name:
-                return sps.kron(sps.kron(Ix, sps.csr_matrix(dom_obj.y.A_matrix)), Iz)
-            elif axis_name == dom_obj.z.name:
-                return sps.kron(sps.kron(Ix, Iy), sps.csr_matrix(dom_obj.z.A_matrix))
-        elif hasattr(dom_obj, "y"):
-            Ix, Iy = sps.eye(dom_obj.x.n_points), sps.eye(dom_obj.y.n_points)
-            if axis_name == dom_obj.x.name:
-                return sps.kron(sps.csr_matrix(dom_obj.x.A_matrix), Iy)
-            elif axis_name == dom_obj.y.name:
-                return sps.kron(Ix, sps.csr_matrix(dom_obj.y.A_matrix))
-        return sps.csr_matrix(dom_obj.A_matrix)
-
-    # =========================================================================
-    # VECTORIAL TRANSLATION ENGINE
-    # =========================================================================
-
-    def _translate_equations(self):
-        # 1. Segurança Máxima: Catch stray atoms (Mapeia símbolos órfãos)
-        for eq_obj in self.model.equations.values():
-            for atom in eq_obj.equation_expression.repr_symbolic.atoms(sp.Symbol):
-                if atom not in self.sym_map:
-                    self.sym_map[atom] = ca.MX.sym(atom.name)
-
-        sympy_symbols_list = list(self.sym_map.keys())
-        casadi_symbols_list = list(self.sym_map.values())
-
-        # 2. Dicionário Unificado
-        eval_dict = {
-            "Float": float,
-            "Integer": int,
-            "Rational": lambda n, d: float(n) / float(d),
-        }
-
-        for var in self.distributed_var_objects_list:
-            dom = var.domain
-            B_ca = self._scipy_to_casadi(self._build_laplacian_sparse(dom))
-            eval_dict[f"Laplacian_{dom.name}"] = lambda x, B=B_ca: ca.mtimes(B, x)
-
-            for loc in [
-                "left",
-                "right",
-                "west",
-                "east",
-                "x_start",
-                "x_end",
-                "top",
-                "bottom",
-                "north",
-                "south",
-                "y_start",
-                "y_end",
-                "front",
-                "back",
-                "z_start",
-                "z_end",
-            ]:
-                axis = None
-                if loc in ["left", "right", "west", "east", "x_start", "x_end"]:
-                    axis = dom.x.name if hasattr(dom, "x") else None
-                elif loc in ["bottom", "top", "south", "north", "y_start", "y_end"]:
-                    axis = dom.y.name if hasattr(dom, "y") else None
-                elif loc in ["front", "back", "z_start", "z_end"]:
-                    axis = dom.z.name if hasattr(dom, "z") else None
-                if axis:
-                    A_n_ca = self._scipy_to_casadi(
-                        self._build_gradient_sparse(dom, axis_name=axis)
-                    )
-                    eval_dict[f"NormalGradient_{dom.name}_{loc}"] = lambda x, A=A_n_ca: (
-                        ca.mtimes(A, x)
-                    )
-
+    def _isolate_and_concatenate_graphs(self):
+        """
+        Processes the native CasADi equations.
+        Applies exact Jacobian algebra (M * x_dot = -F) to isolate time
+        derivatives automatically, ensuring C++ signature compliance during substitution.
+        """
         ode_acc = {
             v.name: ca.MX.zeros(v.n_points) for v in self.distributed_var_objects_list
         }
@@ -243,48 +142,47 @@ class CasadiTranspiler:
         alg_acc = []
 
         if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
-            print(" -> Lambdifying Block Tensors into CasADi Graph...")
+            print(" -> Applying Native Jacobian Isolation and Concatenation...")
 
         for eq_name, eq_obj in self.model.equations.items():
-            expr = eq_obj.equation_expression.repr_symbolic
+            expr = eq_obj.equation_expression.symbolic_object
+
+            # FIX: Bind the native expression in a list to match the C++ signature: ([MX], [MX], [MX])
+            expr_sub = ca.substitute([expr], self.old_syms, self.new_syms)[0]
 
             if eq_obj.type == "differential":
-                dot_sym = [s for s in expr.free_symbols if str(s).endswith("_dot")][0]
-                var_name = str(dot_sym).replace("_dot", "")
+                all_syms = ca.symvar(expr_sub)
+                dot_syms = [s for s in all_syms if s.name().endswith("_dot")]
 
-                term_B = expr.subs(dot_sym, 0)
-                term_A = expr.diff(dot_sym)
-                isolated_rhs = -term_B / term_A
+                if not dot_syms:
+                    raise RuntimeError(
+                        f"Equation '{eq_name}' is differential but lacks a temporal derivative (_dot)."
+                    )
 
-                ca_func = sp.lambdify(
-                    sympy_symbols_list, isolated_rhs, modules=[eval_dict, ca, "numpy"]
-                )
-                ca_val = ca_func(*casadi_symbols_list)
+                dot_sym = dot_syms[0]
+                var_name = dot_sym.name().replace("_dot", "")
+
+                # FIX: Consistent list encapsulation for Jacobian zero-state evaluation
+                F = ca.substitute(
+                    [expr_sub], [dot_sym], [ca.MX.zeros(dot_sym.size1(), 1)]
+                )[0]
+                M = ca.jacobian(expr_sub, dot_sym)
+
+                isolated_rhs = ca.solve(M, -F)
 
                 if getattr(eq_obj, "is_distributed", False):
-                    if hasattr(ca_val, "is_scalar") and ca_val.is_scalar():
-                        ca_val = ca.repmat(
-                            ca_val, self.model.variables[var_name].n_points, 1
-                        )
-                    ode_acc[var_name][eq_obj.flat_indices] = ca_val[eq_obj.flat_indices]
+                    ode_acc[var_name][eq_obj.flat_indices] = isolated_rhs[
+                        eq_obj.flat_indices
+                    ]
                 else:
-                    ode_lumped[var_name] = ca_val
+                    ode_lumped[var_name] = isolated_rhs
 
             else:
-                ca_func = sp.lambdify(
-                    sympy_symbols_list, expr, modules=[eval_dict, ca, "numpy"]
-                )
-                ca_val = ca_func(*casadi_symbols_list)
-
                 if getattr(eq_obj, "is_distributed", False):
-                    if hasattr(ca_val, "is_scalar") and ca_val.is_scalar():
-                        alg_acc.append(ca.repmat(ca_val, len(eq_obj.flat_indices), 1))
-                    else:
-                        alg_acc.append(ca_val[eq_obj.flat_indices])
+                    alg_acc.append(expr_sub[eq_obj.flat_indices])
                 else:
-                    alg_acc.append(ca_val)
+                    alg_acc.append(expr_sub)
 
-        # Assemble strictly aligned DAE arrays
         ode_list = []
         for x_name in self.x_names_order:
             if x_name in ode_lumped:

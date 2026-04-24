@@ -1,8 +1,15 @@
 # -*- coding: utf-8 -*-
 
 """
-Define the Parameter class for the ANTARES framework.
+Parameter Module (V5 Native CasADi Architecture).
+
+Defines the Parameter class for the ANTARES framework.
+In the V5 Architecture, Parameters instantiate their own native CasADi MX
+symbolic objects. They represent fixed or tunable scalars in the equations
+that are isolated into the 'p' vector of the DAE system.
 """
+
+import casadi as ca
 
 import antares.core.GLOBAL_CFG as cfg
 
@@ -12,10 +19,9 @@ from .quantity import Quantity
 
 class Parameter(Quantity):
     """
-    Parameter class definition, holding capabilities for:
-    - Parameter definition, including its units for dimensional coherence analysis.
-    - Parameter operations using overloaded mathematical operators, enabling an
-      almost-writing-syntax (e.g., a() + b()).
+    Parameter class definition.
+    Acts as a physical parameter in the mathematical model, enforcing
+    dimensional coherence. Natively holds a CasADi MX symbolic scalar.
     """
 
     def __init__(
@@ -31,7 +37,7 @@ class Parameter(Quantity):
         """
         Initializes the Parameter object.
 
-        :param str name: Name of the current parameter.
+        :param str name: Internal and symbolic name of the parameter.
         :param Unit units: Dimensional unit definition of the current parameter.
         :param str description: Short description for the parameter. Defaults to "".
         :param float value: Numerical value of the parameter. Defaults to 0.0.
@@ -39,19 +45,23 @@ class Parameter(Quantity):
         :param bool is_specified: Flag indicating if the parameter's value has been explicitly set.
         :param str owner_model_name: Name of the model that owns this parameter.
         """
-        # The base class Quantity handles the assignment of name, units, description, value, etc.
+        # The base class Quantity handles the assignment of physical metadata
         super().__init__(name, units, description, value, latex_text, owner_model_name)
 
         self.is_specified = is_specified
 
+        # V5 NATIVE CASADI ALLOCATION
+        # Instantiates the underlying C++ symbolic scalar for the solver
+        self.symbolic_object = ca.MX.sym(self.name)
+
     def setValue(self, quantity_value, quantity_unit=None):
         """
-        Method for value specification of the Parameter object.
+        Sets the numerical value for the Parameter object.
         Performs dimensional checks based on the GLOBAL_CFG settings.
 
-        :param [float, int, Quantity] quantity_value: Numerical value or another Quantity object.
+        :param quantity_value: Numerical value or another Quantity object.
+        :type quantity_value: float, int, or Quantity
         :param Unit quantity_unit: Optional unit object for the parameter. Defaults to None.
-
         :raises DimensionalCoherenceError: If units are incompatible and global checks are enabled.
         :raises UnexpectedValueError: If an unsupported type is provided.
         """
