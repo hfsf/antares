@@ -4,7 +4,7 @@
 
 ![antares_logo](https://github.com/hfsf/antares/blob/main/docs/antares_logo.png?raw=true)
 
-![version](https://img.shields.io/badge/version-0.1.0a--V5-orange?style=for-the-badge)
+![version](https://img.shields.io/badge/version-0.1.0a-orange?style=for-the-badge)
 ![python](https://img.shields.io/badge/python-3.10%2B-blue?style=for-the-badge)
 [![License: GPL](https://img.shields.io/badge/License-GPL-blue.svg?style=for-the-badge)](https://opensource.org/licenses/GPL)
 

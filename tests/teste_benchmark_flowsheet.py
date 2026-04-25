@@ -182,8 +182,8 @@ if __name__ == "__main__":
     # -------------------------------------------------------------------------
 
     # Extraímos a última linha da matriz de resultados (t = 150 min, Steady-State)
-    C1_sim = resultados.get_variable(planta.R1.C_out.name)[-1]
-    C2_sim = resultados.get_variable(planta.R2.C_out.name)[-1]
+    C1_sim = resultados.get_variable(planta.R1.C_out)[-1]
+    C2_sim = resultados.get_variable(planta.R2.C_out)[-1]
 
     # Resultados Analíticos Exatos (calculados do balanço global de massa)
     C1_lit = 0.50 / 0.85

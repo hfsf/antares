@@ -18,6 +18,7 @@ import scipy.sparse as sps
 
 from .error_definitions import UnexpectedValueError
 from .expression_evaluation import EquationNode
+from .unit import Unit
 
 
 class Domain(ABC):
@@ -201,6 +202,13 @@ class Domain1D(Domain):
         self.n_points = int(n_points)
         self.shape = (self.n_points,)
         self.unit = unit
+
+        # Convert the string unit to a Unit object (likewise quantity.py)
+        if isinstance(unit, str):
+            self.unit = Unit("", unit)
+        else:
+            self.unit = unit
+
         self.diff_scheme = diff_scheme.lower()
 
         self.grid = None
@@ -386,10 +394,10 @@ class Domain3D(Domain):
 
         return sps.csr_matrix(self.x.A_matrix)  # Fallback
 
-
 # =============================================================================
 # CURVILINEAR DOMAINS (Symmetric 1D representations for Tensor Products)
 # =============================================================================
+
 
 class RadialDomain(Domain1D):
     """
@@ -399,49 +407,126 @@ class RadialDomain(Domain1D):
     This class DOES NOT represent the full classical 3D cylindrical system (r, theta, z).
     It represents strictly the 1D radial symmetric axis. In process engineering, 
     angular symmetry (d/d_theta = 0) is almost always assumed for pipes and catalysts.
-    To simulate a full 2D tubular reactor (radial + longitudinal), this RadialDomain 
-    should be coupled with a Cartesian Domain1D (representing the Z axis) via 
-    a tensor product (Domain2D).
     
-    This class overrides the standard Finite Difference Laplacian matrix to automatically
-    incorporate the convective geometric term (1/r * dC/dr) and safely handles the 
-    singularity at the exact center (r=0) using L'Hôpital's rule.
+    ANNULAR DOMAINS VS SOLID CYLINDERS:
+    This class handles both cases dynamically based on the `inner_radius` attribute.
+    - If `inner_radius == 0.0` (Solid Cylinder): The geometric center acts as a mathematical 
+      singularity. The framework automatically applies L'Hôpital's rule to the Laplacian operator 
+      to ensure continuous symmetry, treating the center as part of the PDE bulk. Users are 
+      explicitly blocked from applying boundary conditions at the center.
+    - If `inner_radius > 0.0` (Annular Domain/Hollow Tube): The singularity vanishes. The mesh starts 
+      at a physical inner wall (e.g., a cooling coil surface), reverting the first node to a standard 
+      computational boundary, fully open to user-defined Dirichlet or Neumann conditions.
     """
 
+    def __init__(
+        self,
+        name,
+        radius,
+        n_points,
+        unit,
+        description="",
+        method="mol",
+        diff_scheme="central",
+        inner_radius=0.0,
+    ):
+        """
+        Instantiates a Radial Domain.
+
+        :param str name: Local name of the domain.
+        :param float radius: Total physical outer radius (R).
+        :param int n_points: Number of discretization nodes.
+        :param str|Unit unit: Dimensional length unit.
+        :param str description: Physical description of the domain.
+        :param str method: Method of discretization. Defaults to 'mol'.
+        :param str diff_scheme: Differentiation scheme. Defaults to 'central'.
+        :param float inner_radius: Starting radius for annular configurations. Defaults to 0.0 (Solid).
+        :raises ValueError: If the inner radius is greater than or equal to the outer radius.
+        """
+        self.inner_radius = float(inner_radius)
+        self.outer_radius = float(radius)
+        
+        if self.inner_radius >= self.outer_radius:
+            raise ValueError(
+                f"RadialDomain '{name}': inner_radius ({self.inner_radius}) "
+                f"must be strictly less than the outer radius ({self.outer_radius})."
+            )
+            
+        # The mathematical length of the mesh is the thickness of the shell/annulus
+        length = self.outer_radius - self.inner_radius
+        super().__init__(name, length, n_points, unit, description, method, diff_scheme)
+
+    def get_bulk_slice(self):
+        """
+        Overrides the standard spatial slicing to handle the center node dynamically.
+
+        In solid domains (inner_radius == 0), the center is part of the continuous 
+        bulk and is governed natively by the PDE. In annular domains, the first node 
+        is a physical boundary (e.g., a pipe wall) and is excluded from the bulk.
+
+        :return: A slice object mapping the interior equation nodes.
+        :rtype: slice
+        """
+        if self.inner_radius == 0.0:
+            return slice(0, -1)
+        return slice(1, -1)
+
+    def get_boundary(self, locator):
+        """
+        Overrides boundary resolution to protect the symmetry axis when necessary.
+
+        :param str locator: Semantic boundary locator.
+        :return: Slicing tuple and topological suffix.
+        :rtype: tuple
+        :raises ValueError: If the user attempts to apply a boundary at r=0 in a solid domain.
+        """
+        pos = str(locator).lower()
+        if pos in ["start", "inlet", "left", "bottom", "front"]:
+            if self.inner_radius == 0.0:
+                raise ValueError(
+                    "In solid radial domains, the center (r=0) is a native symmetry axis "
+                    "governed directly by the PDE. Apply boundary conditions only at the surface ('end'). "
+                    "To apply a boundary at the core, declare an annular domain by setting inner_radius > 0."
+                )
+        return super().get_boundary(locator)
+
     def _build_mesh(self):
-        """Generates the finite difference matrices tailored for cylindrical symmetry."""
+        """
+        Generates the finite difference matrices tailored for cylindrical symmetry.
+        Transitions seamlessly between L'Hôpital (Solid) and standard MoL (Annular).
+        """
         if self.method != "mol":
             raise UnexpectedValueError("Only 'mol' is supported currently.")
 
         self.dz = self.length / (self.n_points - 1)
-        self.grid = np.linspace(0, self.length, self.n_points)
+        
+        # The mesh grid begins at the inner_radius, NOT at 0.0 globally.
+        self.grid = np.linspace(self.inner_radius, self.outer_radius, self.n_points)
         N, dr = self.n_points, self.dz
         
         self.A_matrix = np.zeros((N, N))
         self.B_matrix = np.zeros((N, N))
 
-        # 1. Internal Nodes (Standard Cylindrical Finite Differences)
+        # 1. Internal Nodes (Valid for both solid and annular)
         for i in range(1, N - 1):
             r_i = self.grid[i]
-
-            # Gradient (Central Difference)
             self.A_matrix[i, i - 1] = -1.0 / (2 * dr)
             self.A_matrix[i, i + 1] = 1.0 / (2 * dr)
-
-            # Laplacian: d2C/dr2 + (1/r)*dC/dr
             self.B_matrix[i, i - 1] = (1.0 / (dr**2)) - (1.0 / (2 * r_i * dr))
             self.B_matrix[i, i]     = -2.0 / (dr**2)
             self.B_matrix[i, i + 1] = (1.0 / (dr**2)) + (1.0 / (2 * r_i * dr))
 
-        # 2. Singularity Boundary (Center, r = 0)
-        # Using L'Hôpital's rule: lim(r->0) (1/r * dC/dr) = d2C/dr2.
-        # Total Laplacian at r=0 becomes: 2 * d2C/dr2.
-        # Boundary condition assumes pure symmetry (dC/dr = 0), meaning C[-1] = C[1].
-        # Therefore, 2 * d2C/dr2 = 2 * (C[1] - 2C[0] + C[-1])/dr^2 = 4(C[1] - C[0])/dr^2.
-        self.A_matrix[0, 0:3] = [0.0, 0.0, 0.0]  # Symmetry prevents gradient flux across center
-        self.B_matrix[0, 0:2] = [-4.0 / (dr**2), 4.0 / (dr**2)]
+        # 2. Start Boundary (r = inner_radius)
+        if self.inner_radius == 0.0:
+            # Singularity (Solid Cylinder) - Apply L'Hôpital's rule
+            self.A_matrix[0, 0:3] = [0.0, 0.0, 0.0]
+            self.B_matrix[0, 0:2] = [-4.0 / (dr**2), 4.0 / (dr**2)]
+        else:
+            # Annular Boundary - Fallback standard forward difference (Typically overridden by BCs)
+            self.A_matrix[0, 0:3] = [-3.0 / (2 * dr), 4.0 / (2 * dr), -1.0 / (2 * dr)]
+            self.B_matrix[0, 0:3] = [1.0 / (dr**2), -2.0 / (dr**2), 1.0 / (dr**2)]
 
-        # 3. Outer Boundary (r = R) - Fallback differences (Typically overridden by BCs)
+        # 3. Outer Boundary (r = R) - Fallback standard backward difference
         self.A_matrix[-1, -3:] = [1.0 / (2 * dr), -4.0 / (2 * dr), 3.0 / (2 * dr)]
         self.B_matrix[-1, -3:] = [1.0 / (dr**2), -2.0 / (dr**2), 1.0 / (dr**2)]
 
@@ -452,47 +537,118 @@ class SphericalDomain(Domain1D):
     
     IMPORTANT ARCHITECTURAL NOTE:
     This class DOES NOT represent the full classical 3D spherical system (r, theta, phi).
-    It represents strictly the 1D radial symmetric axis. In process engineering, 
-    angular symmetries are universally assumed for spherical catalytic particles 
-    and droplets, rendering full 3D meshes computationally wasteful.
+    It represents strictly the 1D radial symmetric axis. 
     
-    This class overrides the standard Finite Difference Laplacian matrix to automatically
-    incorporate the convective geometric term (2/r * dC/dr) and safely handles the 
-    singularity at the exact center (r=0) using L'Hôpital's rule.
+    ANNULAR DOMAINS VS SOLID SPHERES:
+    This class handles both cases dynamically based on the `inner_radius` attribute.
+    - If `inner_radius == 0.0` (Solid Sphere): The geometric center acts as a mathematical 
+      singularity. The framework automatically applies L'Hôpital's rule to the Laplacian operator 
+      to ensure continuous symmetry, treating the center as part of the PDE bulk.
+    - If `inner_radius > 0.0` (Hollow Sphere): The singularity vanishes. The mesh starts 
+      at a physical inner wall, reverting the first node to a standard boundary open 
+      to user-defined conditions.
     """
 
+    def __init__(
+        self,
+        name,
+        radius,
+        n_points,
+        unit,
+        description="",
+        method="mol",
+        diff_scheme="central",
+        inner_radius=0.0,
+    ):
+        """
+        Instantiates a Spherical Domain.
+
+        :param str name: Local name of the domain.
+        :param float radius: Total physical outer radius (R).
+        :param int n_points: Number of discretization nodes.
+        :param str|Unit unit: Dimensional length unit.
+        :param str description: Physical description of the domain.
+        :param str method: Method of discretization. Defaults to 'mol'.
+        :param str diff_scheme: Differentiation scheme. Defaults to 'central'.
+        :param float inner_radius: Starting radius for hollow configurations. Defaults to 0.0 (Solid).
+        :raises ValueError: If the inner radius is greater than or equal to the outer radius.
+        """
+        self.inner_radius = float(inner_radius)
+        self.outer_radius = float(radius)
+        
+        if self.inner_radius >= self.outer_radius:
+            raise ValueError(
+                f"SphericalDomain '{name}': inner_radius ({self.inner_radius}) "
+                f"must be strictly less than the outer radius ({self.outer_radius})."
+            )
+            
+        length = self.outer_radius - self.inner_radius
+        super().__init__(name, length, n_points, unit, description, method, diff_scheme)
+
+    def get_bulk_slice(self):
+        """
+        Overrides the standard spatial slicing to handle the center node dynamically.
+
+        :return: A slice object mapping the interior equation nodes.
+        :rtype: slice
+        """
+        if self.inner_radius == 0.0:
+            return slice(0, -1)
+        return slice(1, -1)
+
+    def get_boundary(self, locator):
+        """
+        Overrides boundary resolution to protect the symmetry axis when necessary.
+
+        :param str locator: Semantic boundary locator.
+        :return: Slicing tuple and topological suffix.
+        :rtype: tuple
+        :raises ValueError: If the user attempts to apply a boundary at r=0 in a solid domain.
+        """
+        pos = str(locator).lower()
+        if pos in ["start", "inlet", "left", "bottom", "front"]:
+            if self.inner_radius == 0.0:
+                raise ValueError(
+                    "In solid spherical domains, the center (r=0) is a native symmetry axis "
+                    "governed directly by the PDE. Apply boundary conditions only at the surface ('end'). "
+                    "To apply a boundary at the core, declare a hollow domain by setting inner_radius > 0."
+                )
+        return super().get_boundary(locator)
+
     def _build_mesh(self):
-        """Generates the finite difference matrices tailored for spherical symmetry."""
+        """
+        Generates the finite difference matrices tailored for spherical symmetry.
+        Transitions seamlessly between L'Hôpital (Solid) and standard MoL (Hollow).
+        """
         if self.method != "mol":
             raise UnexpectedValueError("Only 'mol' is supported currently.")
 
         self.dz = self.length / (self.n_points - 1)
-        self.grid = np.linspace(0, self.length, self.n_points)
+        self.grid = np.linspace(self.inner_radius, self.outer_radius, self.n_points)
         N, dr = self.n_points, self.dz
         
         self.A_matrix = np.zeros((N, N))
         self.B_matrix = np.zeros((N, N))
 
-        # 1. Internal Nodes (Standard Spherical Finite Differences)
+        # 1. Internal Nodes
         for i in range(1, N - 1):
             r_i = self.grid[i]
-
-            # Gradient (Central Difference)
             self.A_matrix[i, i - 1] = -1.0 / (2 * dr)
             self.A_matrix[i, i + 1] = 1.0 / (2 * dr)
-
-            # Laplacian: d2C/dr2 + (2/r)*dC/dr
             self.B_matrix[i, i - 1] = (1.0 / (dr**2)) - (1.0 / (r_i * dr))
             self.B_matrix[i, i]     = -2.0 / (dr**2)
             self.B_matrix[i, i + 1] = (1.0 / (dr**2)) + (1.0 / (r_i * dr))
 
-        # 2. Singularity Boundary (Center, r = 0)
-        # Using L'Hôpital's rule: lim(r->0) (2/r * dC/dr) = 2 * d2C/dr2.
-        # Total Laplacian at r=0 becomes: 3 * d2C/dr2.
-        # Assuming symmetry (dC/dr = 0 -> C[-1] = C[1]): 3 * d2C/dr2 = 6(C[1] - C[0])/dr^2.
-        self.A_matrix[0, 0:3] = [0.0, 0.0, 0.0]
-        self.B_matrix[0, 0:2] = [-6.0 / (dr**2), 6.0 / (dr**2)]
+        # 2. Start Boundary (r = inner_radius)
+        if self.inner_radius == 0.0:
+            # Singularity (Solid Sphere) - Apply L'Hôpital's rule
+            self.A_matrix[0, 0:3] = [0.0, 0.0, 0.0]
+            self.B_matrix[0, 0:2] = [-6.0 / (dr**2), 6.0 / (dr**2)]
+        else:
+            # Hollow Boundary - Fallback standard forward difference
+            self.A_matrix[0, 0:3] = [-3.0 / (2 * dr), 4.0 / (2 * dr), -1.0 / (2 * dr)]
+            self.B_matrix[0, 0:3] = [1.0 / (dr**2), -2.0 / (dr**2), 1.0 / (dr**2)]
 
-        # 3. Outer Boundary (r = R) - Fallback differences (Typically overridden by BCs)
+        # 3. Outer Boundary (r = R) - Fallback standard backward difference
         self.A_matrix[-1, -3:] = [1.0 / (2 * dr), -4.0 / (2 * dr), 3.0 / (2 * dr)]
         self.B_matrix[-1, -3:] = [1.0 / (dr**2), -2.0 / (dr**2), 1.0 / (dr**2)]
