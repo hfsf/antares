@@ -5,8 +5,9 @@ Quantity Module (V5 Native CasADi Architecture).
 
 Acts as the base class for all unit-containing objects (Variables, Parameters, Constants)
 in the ANTARES framework. In the V5 Architecture, this class is completely sanitized
-from SymPy dependencies. It strictly manages physical attributes (values and units)
-and delegates the CasADi MX graph instantiation to its child classes.
+from SymPy dependencies. It strictly manages physical attributes (values and units),
+incorporates scaling normalizations for derived units, and delegates the CasADi MX
+graph instantiation to its child classes.
 """
 
 import antares.core.GLOBAL_CFG as cfg
@@ -66,10 +67,12 @@ class Quantity:
     def setValue(self, quantity_value, quantity_unit=None):
         """
         Sets the numerical value for the Quantity object, with optional dimensional checks.
+        Automatically normalizes the value based on the scaling factor if the inputted unit
+        differs in scale from the object's base unit.
 
         :param quantity_value: Numerical value or another Quantity object.
         :type quantity_value: float, int, or Quantity
-        :param Unit quantity_unit: Optional unit object to validate against. Defaults to None.
+        :param Unit quantity_unit: Optional unit object to validate and scale against. Defaults to None.
         :raises DimensionalCoherenceError: If units clash and global checking is enabled.
         :raises UnexpectedValueError: If an unsupported type is passed.
         """
@@ -79,25 +82,36 @@ class Quantity:
                 return True
             return unit1._check_dimensional_coherence(unit2)
 
+        # Case 1: Value is passed as another Quantity object
         if isinstance(quantity_value, self.__class__):
             if quantity_unit is None and is_dimensionally_coherent(
                 quantity_value.units, self.units
             ):
-                self.value = float(quantity_value.value)
+                # Normalization mapping based on scaling factors
+                scale_ratio = (
+                    quantity_value.units.scaling_factor / self.units.scaling_factor
+                )
+                self.value = float(quantity_value.value) * scale_ratio
                 self.is_specified = True
             else:
                 raise DimensionalCoherenceError(self.units, quantity_value.units)
 
+        # Case 2: Value is a pure number and no specific unit is provided
         elif isinstance(quantity_value, (float, int)) and quantity_unit is None:
             self.value = float(quantity_value)
             self.is_specified = True
 
+        # Case 3: Value is a pure number but a specific unit is provided alongside it
         elif isinstance(quantity_value, (float, int)) and quantity_unit is not None:
             if is_dimensionally_coherent(quantity_unit, self.units):
-                self.value = float(quantity_value)
+                # Normalization mapping based on scaling factors
+                scale_ratio = quantity_unit.scaling_factor / self.units.scaling_factor
+                self.value = float(quantity_value) * scale_ratio
                 self.is_specified = True
             else:
                 raise DimensionalCoherenceError(self.units, quantity_unit)
+
+        # Invalid Input
         else:
             raise UnexpectedValueError("(Quantity, float, int)")
 
@@ -131,16 +145,26 @@ class Quantity:
     def __add__(self, other_obj):
         """
         Overloaded operator for summation (+).
-        Evaluates the numerical values and checks dimensional coherence based on GLOBAL_CFG.
+        Evaluates the numerical values, standardizes the scales based on the
+        scaling factors, and checks dimensional coherence based on GLOBAL_CFG.
+
+        :param Quantity other_obj: The object to be added.
+        :return: A new Quantity object representing the sum.
+        :rtype: Quantity
+        :raises DimensionalCoherenceError: If the objects have incompatible dimensions.
         """
         if (
             not cfg.DIMENSIONAL_COHERENCE_CHECK
             or self.units._check_dimensional_coherence(other_obj.units)
         ):
+            # Normalizes the other object's value into the target scale
+            scale_ratio = other_obj.units.scaling_factor / self.units.scaling_factor
+            converted_value = other_obj.value * scale_ratio
+
             new_obj = self.__class__(
                 name=f"({self.name}_plus_obj)",
                 units=self.units,
-                value=self.value + other_obj.value,
+                value=self.value + converted_value,
             )
             return new_obj
         else:
@@ -149,16 +173,26 @@ class Quantity:
     def __sub__(self, other_obj):
         """
         Overloaded operator for subtraction (-).
-        Evaluates the numerical values and checks dimensional coherence based on GLOBAL_CFG.
+        Evaluates the numerical values, standardizes the scales based on the
+        scaling factors, and checks dimensional coherence based on GLOBAL_CFG.
+
+        :param Quantity other_obj: The object to be subtracted.
+        :return: A new Quantity object representing the subtraction.
+        :rtype: Quantity
+        :raises DimensionalCoherenceError: If the objects have incompatible dimensions.
         """
         if (
             not cfg.DIMENSIONAL_COHERENCE_CHECK
             or self.units._check_dimensional_coherence(other_obj.units)
         ):
+            # Normalizes the other object's value into the target scale
+            scale_ratio = other_obj.units.scaling_factor / self.units.scaling_factor
+            converted_value = other_obj.value * scale_ratio
+
             new_obj = self.__class__(
                 name=f"({self.name}_minus_obj)",
                 units=self.units,
-                value=self.value - other_obj.value,
+                value=self.value - converted_value,
             )
             return new_obj
         else:
@@ -167,7 +201,11 @@ class Quantity:
     def __mul__(self, other_obj):
         """
         Overloaded operator for multiplication (*).
-        Evaluates the numerical values and adjusts the resulting units.
+        Evaluates the numerical values and adjusts the resulting units and scales.
+
+        :param Quantity other_obj: The object to be multiplied.
+        :return: A new Quantity object representing the product.
+        :rtype: Quantity
         """
         new_obj = self.__class__(
             name=f"({self.name}_mul_obj)",
@@ -179,7 +217,11 @@ class Quantity:
     def __truediv__(self, other_obj):
         """
         Overloaded operator for true division (/) in Python 3.
-        Evaluates the numerical values and adjusts the resulting units.
+        Evaluates the numerical values and adjusts the resulting units and scales.
+
+        :param Quantity other_obj: The object to be divided by.
+        :return: A new Quantity object representing the division.
+        :rtype: Quantity
         """
         new_obj = self.__class__(
             name=f"({self.name}_div_obj)",
@@ -192,6 +234,10 @@ class Quantity:
         """
         Overloaded operator for exponentiation (**).
         Accepts both pure numerical types (float/int) and Quantity objects for the exponent.
+
+        :param [float, int, Quantity] power: The exponent.
+        :return: A new Quantity object raised to the given power.
+        :rtype: Quantity
         """
         # Safely extract the numerical value of the exponent
         power_val = power.value if hasattr(power, "value") else float(power)

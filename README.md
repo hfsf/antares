@@ -1,52 +1,46 @@
-# ANTARES
+# Project ANTARES 
 
-###### (Derived from SLOTH project)
+###### (Evolving towards its next iteration)
 
 ![antares_logo](https://github.com/hfsf/antares/blob/main/docs/antares_logo.png?raw=true)
 
-![version](https://img.shields.io/badge/version-0.1.5a-orange?style=for-the-badge)
+![version](https://img.shields.io/badge/version-0.1.0a--V5-orange?style=for-the-badge)
 ![python](https://img.shields.io/badge/python-3.10%2B-blue?style=for-the-badge)
 [![License: GPL](https://img.shields.io/badge/License-GPL-blue.svg?style=for-the-badge)](https://opensource.org/licenses/GPL)
 
-<!-- Placeholder for CI/CD and Docs badges
-[![Build Status](https://img.shields.io/travis/com/hfsf/antares/main?style=for-the-badge)](https://travis-ci.com/hfsf/antares)
-[![Documentation Status](https://readthedocs.org/projects/antares/badge/?style=for-the-badge&version=latest)](https://antares.readthedocs.io/en/latest/?badge=latest)
-[![DOI](https://zenodo.org/badge/00000.svg)](https://zenodo.org/badge/latestdoi/00000)
--->
+## What is Project ANTARES?
 
-## What is ANTARES?
+**Project ANTARES** is an experimental, Python-based computational framework designed for **Equation-Oriented (EO)** modeling and simulation of phenomenological systems. 
 
-**ANTARES** is an evolving computational framework designed to solve complex dynamic models and Differential-Algebraic Equations (DAE). Its primary goal is to provide a flexible and highly expressive environment where researchers and engineers can translate phenomenological concepts into high-performance numerical simulations.
+Its primary goal is to bridge the gap between human-readable, declarative engineering models and high-performance numerical solvers. By assembling complex Differential-Algebraic Equations (DAEs) into a single monolithic system, ANTARES solves plant topologies and recycle loops simultaneously, bypassing the convergence issues often found in traditional sequential-modular simulators.
 
-Rather than being a rigid, domain-specific simulator, ANTARES acts as a mathematical bridge between high-level, human-readable declarations (via Python/SymPy) and robust, low-level execution engines (like CasADi).
+### The V5 Native Architecture
+In its recent V5 iteration, the framework underwent a structural paradigm shift. Intermediate symbolic translation layers (such as SymPy) were completely removed. ANTARES now operates as a direct assembler for **CasADi**, constructing native C++ computational graphs (`ca.MX`) and sparse matrices from the ground up. This eliminates AST (Abstract Syntax Tree) memory explosions and significantly accelerates the compilation of large-scale systems.
 
-### Core Philosophy
+### Core Capabilities
 
-- **Expressive yet Fast:** Combine intuitive, object-oriented modeling syntax with the speed of graph-based optimization and JIT C++ compilation.
-- **Adaptable to Complexity:** Built to handle the specific challenges of advanced engineering—such as stiff systems, highly nonlinear kinetics, and complex boundary conditions.
-- **Delegate Physical Properties:** Focus purely on mathematical resolution and optimization, seamlessly delegating thermodynamic and physical property calculations to specialized external libraries (e.g., _Cantera_, _Thermo_).
-
-### Key Features (Current)
-
-- **Equation-Oriented Modeling:** Declare variables, domains, and mass/energy balances naturally using Python objects.
-- **Flexible Discretization:** Native support for translating PDEs into algebraic or differential systems using the **Method of Lines (MOL)** or **Orthogonal Collocation**.
-- **Automatic Differentiation (AD):** Exact Jacobians and Hessians provided natively through the CasADi backend, ensuring solver convergence.
-- **Symbolic Transpilation:** Automatically converts Python-based Abstract Syntax Trees (AST) into optimized computational graphs.
+- **Equation-Oriented Solving:** Translates object-oriented topologies into a global DAE matrix, integrated via the robust SUNDIALS suite (IDAS for dynamics, KINSOL for steady-state).
+- **Strict Dimensional Guardian:** A rigid Python-layer unit manager that enforces physical coherence during equation formulation. It supports engineering derived units (e.g., `L/min`, `bar`, `cP`) and performs automatic SI-scaling normalization before feeding data to the C++ numerical engine.
+- **Abstracted Spatial Discretization (PDEs):** Supports lumped (0D) models and extends to multi-dimensional geometries using the Method of Lines (MoL) and sparse tensor products. Features geometrically-aware curvilinear domains (`RadialDomain`, `SphericalDomain`) that seamlessly handle central singularities (at $r=0$) using L'Hôpital's rule. Support for Orthogonal Collocation Method will de implemented in the future.
+- **Declarative OOP Frontend:** Encourages the creation of modular equipment libraries through clear class inheritance (`DeclareVariables`, `DeclareEquations`, `DeclareParameters`), paired with a robust `Connection` framework for flowsheet mapping.
 
 ### Roadmap & Future Horizons
 
-ANTARES is being architected from the ground up to support advanced methodologies. Upcoming capabilities include:
+The architecture is being laid out to support advanced numerical methodologies in the future:
+- **Advanced Optimization Suite:** Parameter estimation, Nonlinear Model Predictive Control (NMPC), and Dynamic Real-Time Optimization (DRTO) using CasADi's exact Jacobians and Hessians.
+- **Hybrid Modeling:** Exploring pathways to integrate data-driven approaches (Machine Learning) directly into the phenomenological DAE graphs.
+- **Property Delegation:** Continued decoupling of thermodynamic property calculations to specialized external packages.
+- **Hybrid Modeling (Physics + ML):** Integration with Machine Learning frameworks to solve PDEs and enhance phenomenological models using data-driven approaches.
 
-- **Hybrid Modeling (Physics + ML):** Native integration with Machine Learning frameworks (such as **Keras/TensorFlow**) to solve PDEs and enhance phenomenological models using data-driven approaches.
-- **Advanced Optimization Suite:** Built-in wrappers and routines for Dynamic Real-Time Optimization (DRTO), Nonlinear Model Predictive Control (NMPC), and automated parameter estimation.
-- **Multidimensional Domains:** Expanding spatial discretization and tensor operations to natively support 2D and 3D modeling scenarios.
+- **Thermodynamic Delegation:** Seamlessly delegating property calculations to specialized external libraries (e.g., *Thermo*, *CoolProp*).
+
 
 ## Current Status
 
-⚠️ **Alpha Version (v0.1.5a)**
+⚠️ **Alpha Version (v0.1.0a)**
 
-ANTARES is currently in its core architectural development phase. The codebase is fluid, and the API is subject to change as we lay the groundwork for the future features mentioned above. The project is not yet mature enough for external contributions.
+Project ANTARES is currently in a highly fluid, architectural development phase. While the core mathematical engine is functional, the API is experimental and subject to profound changes without notice. It is primarily a general-purpose research tool and is **not yet mature enough for production environments or external contributions.**
 
 ## Contact
 
-For architectural discussions, ideas, or collaborations, please contact: **[hanniel.freitas@ifrn.edu.br](mailto:hanniel.freitas@ifrn.edu.br)**.
+For architectural discussions, concepts, or academic inquiries, please contact: **[hanniel.freitas@ifrn.edu.br](mailto:hanniel.freitas@ifrn.edu.br)**.

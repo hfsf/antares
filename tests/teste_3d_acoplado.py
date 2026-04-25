@@ -28,7 +28,7 @@ class CuboDispersao(Model):
         self()
 
     def DeclareVariables(self):
-        N = 100
+        N = 10
         L = 2.0
         self.eixo_x = self.createDomain("X", unit=m, length=L, n_points=N)
         self.eixo_y = self.createDomain("Y", unit=m, length=L, n_points=N)
@@ -102,7 +102,7 @@ if __name__ == "__main__":
     t_span = np.linspace(0, 15, 60)
 
     simulador = Simulator(model=planta)
-    resultados = simulador.run(t_span, linear_solver="iterative", use_c_code=False)
+    resultados = simulador.run(t_span, linear_solver="direct", use_c_code=True)
 
     # =============================================================================
     # 4. VISUALIZAÇÃO PONTUAL (TOTALMENTE ABSTRAÍDA)

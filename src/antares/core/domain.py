@@ -385,3 +385,114 @@ class Domain3D(Domain):
             return sps.kron(sps.kron(Ix, Iy), sps.csr_matrix(self.z.A_matrix))
 
         return sps.csr_matrix(self.x.A_matrix)  # Fallback
+
+
+# =============================================================================
+# CURVILINEAR DOMAINS (Symmetric 1D representations for Tensor Products)
+# =============================================================================
+
+class RadialDomain(Domain1D):
+    """
+    1-Dimensional spatial domain representing the Radial axis (r) of Cylindrical coordinates.
+    
+    IMPORTANT ARCHITECTURAL NOTE:
+    This class DOES NOT represent the full classical 3D cylindrical system (r, theta, z).
+    It represents strictly the 1D radial symmetric axis. In process engineering, 
+    angular symmetry (d/d_theta = 0) is almost always assumed for pipes and catalysts.
+    To simulate a full 2D tubular reactor (radial + longitudinal), this RadialDomain 
+    should be coupled with a Cartesian Domain1D (representing the Z axis) via 
+    a tensor product (Domain2D).
+    
+    This class overrides the standard Finite Difference Laplacian matrix to automatically
+    incorporate the convective geometric term (1/r * dC/dr) and safely handles the 
+    singularity at the exact center (r=0) using L'Hôpital's rule.
+    """
+
+    def _build_mesh(self):
+        """Generates the finite difference matrices tailored for cylindrical symmetry."""
+        if self.method != "mol":
+            raise UnexpectedValueError("Only 'mol' is supported currently.")
+
+        self.dz = self.length / (self.n_points - 1)
+        self.grid = np.linspace(0, self.length, self.n_points)
+        N, dr = self.n_points, self.dz
+        
+        self.A_matrix = np.zeros((N, N))
+        self.B_matrix = np.zeros((N, N))
+
+        # 1. Internal Nodes (Standard Cylindrical Finite Differences)
+        for i in range(1, N - 1):
+            r_i = self.grid[i]
+
+            # Gradient (Central Difference)
+            self.A_matrix[i, i - 1] = -1.0 / (2 * dr)
+            self.A_matrix[i, i + 1] = 1.0 / (2 * dr)
+
+            # Laplacian: d2C/dr2 + (1/r)*dC/dr
+            self.B_matrix[i, i - 1] = (1.0 / (dr**2)) - (1.0 / (2 * r_i * dr))
+            self.B_matrix[i, i]     = -2.0 / (dr**2)
+            self.B_matrix[i, i + 1] = (1.0 / (dr**2)) + (1.0 / (2 * r_i * dr))
+
+        # 2. Singularity Boundary (Center, r = 0)
+        # Using L'Hôpital's rule: lim(r->0) (1/r * dC/dr) = d2C/dr2.
+        # Total Laplacian at r=0 becomes: 2 * d2C/dr2.
+        # Boundary condition assumes pure symmetry (dC/dr = 0), meaning C[-1] = C[1].
+        # Therefore, 2 * d2C/dr2 = 2 * (C[1] - 2C[0] + C[-1])/dr^2 = 4(C[1] - C[0])/dr^2.
+        self.A_matrix[0, 0:3] = [0.0, 0.0, 0.0]  # Symmetry prevents gradient flux across center
+        self.B_matrix[0, 0:2] = [-4.0 / (dr**2), 4.0 / (dr**2)]
+
+        # 3. Outer Boundary (r = R) - Fallback differences (Typically overridden by BCs)
+        self.A_matrix[-1, -3:] = [1.0 / (2 * dr), -4.0 / (2 * dr), 3.0 / (2 * dr)]
+        self.B_matrix[-1, -3:] = [1.0 / (dr**2), -2.0 / (dr**2), 1.0 / (dr**2)]
+
+
+class SphericalDomain(Domain1D):
+    """
+    1-Dimensional spatial domain representing the Radial axis (r) of Spherical coordinates.
+    
+    IMPORTANT ARCHITECTURAL NOTE:
+    This class DOES NOT represent the full classical 3D spherical system (r, theta, phi).
+    It represents strictly the 1D radial symmetric axis. In process engineering, 
+    angular symmetries are universally assumed for spherical catalytic particles 
+    and droplets, rendering full 3D meshes computationally wasteful.
+    
+    This class overrides the standard Finite Difference Laplacian matrix to automatically
+    incorporate the convective geometric term (2/r * dC/dr) and safely handles the 
+    singularity at the exact center (r=0) using L'Hôpital's rule.
+    """
+
+    def _build_mesh(self):
+        """Generates the finite difference matrices tailored for spherical symmetry."""
+        if self.method != "mol":
+            raise UnexpectedValueError("Only 'mol' is supported currently.")
+
+        self.dz = self.length / (self.n_points - 1)
+        self.grid = np.linspace(0, self.length, self.n_points)
+        N, dr = self.n_points, self.dz
+        
+        self.A_matrix = np.zeros((N, N))
+        self.B_matrix = np.zeros((N, N))
+
+        # 1. Internal Nodes (Standard Spherical Finite Differences)
+        for i in range(1, N - 1):
+            r_i = self.grid[i]
+
+            # Gradient (Central Difference)
+            self.A_matrix[i, i - 1] = -1.0 / (2 * dr)
+            self.A_matrix[i, i + 1] = 1.0 / (2 * dr)
+
+            # Laplacian: d2C/dr2 + (2/r)*dC/dr
+            self.B_matrix[i, i - 1] = (1.0 / (dr**2)) - (1.0 / (r_i * dr))
+            self.B_matrix[i, i]     = -2.0 / (dr**2)
+            self.B_matrix[i, i + 1] = (1.0 / (dr**2)) + (1.0 / (r_i * dr))
+
+        # 2. Singularity Boundary (Center, r = 0)
+        # Using L'Hôpital's rule: lim(r->0) (2/r * dC/dr) = 2 * d2C/dr2.
+        # Total Laplacian at r=0 becomes: 3 * d2C/dr2.
+        # Assuming symmetry (dC/dr = 0 -> C[-1] = C[1]): 3 * d2C/dr2 = 6(C[1] - C[0])/dr^2.
+        self.A_matrix[0, 0:3] = [0.0, 0.0, 0.0]
+        self.B_matrix[0, 0:2] = [-6.0 / (dr**2), 6.0 / (dr**2)]
+
+        # 3. Outer Boundary (r = R) - Fallback differences (Typically overridden by BCs)
+        self.A_matrix[-1, -3:] = [1.0 / (2 * dr), -4.0 / (2 * dr), 3.0 / (2 * dr)]
+        self.B_matrix[-1, -3:] = [1.0 / (dr**2), -2.0 / (dr**2), 1.0 / (dr**2)]

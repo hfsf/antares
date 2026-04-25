@@ -157,7 +157,25 @@ if __name__ == "__main__":
 
     # Simulamos 150 minutos (mais que suficiente para a planta atingir o Estado Estacionário)
     t_span = np.linspace(0, 150, 300)
-    resultados = simulador.run(t_span)
+
+    # -------------------------------------------------------------------------
+    # PREVENÇÃO DE JACOBIANO SINGULAR (Zero-Flow Bilinearity Trap)
+    # Fornecemos "chutes" não-nulos para as variáveis algébricas. Isso garante
+    # que as derivadas dos termos bilineares (Fluxo * Concentração) não zerem
+    # no cálculo das Condições Iniciais Algébricas (calc_ic) no t=0.
+    # -------------------------------------------------------------------------
+    chutes_iniciais = {
+        planta.mix.F_out.name: 100.0,
+        planta.R1.F_out.name: 100.0,
+        planta.R2.F_out.name: 100.0,
+        planta.spl.F_out1.name: 50.0,
+        planta.spl.F_out2.name: 50.0,
+        planta.mix.C_out.name: 1.0,
+        planta.R1.F_in.name: 100.0,
+        planta.R2.F_in.name: 100.0,
+    }
+
+    resultados = simulador.run(t_span, initial_conditions=chutes_iniciais)
 
     # -------------------------------------------------------------------------
     # 4. COMPARAÇÃO COM A LITERATURA
@@ -175,8 +193,6 @@ if __name__ == "__main__":
     erro_C2 = abs(C2_sim - C2_lit) / C2_lit * 100.0
 
     print("\n" + "=" * 60)
-    print(" 🏆 AUDITORIA DE BENCHMARK DO ANTARES V5 🏆")
-    print("=" * 60)
     print("Solução de Reciclo Simultâneo (Sem Tearing / Equation-Oriented)")
     print("-" * 60)
     print(

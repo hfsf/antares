@@ -242,12 +242,14 @@ class Model:
         diff_scheme="central",
     ):
         """
-        Factory method to instantiate a 1D spatial domain.
+        Factory method to instantiate a 1D Cartesian spatial domain.
 
         :param str name: Local name of the domain.
         :param Unit unit: Dimensional length unit.
         :param float length: Total physical length.
         :param int n_points: Number of discretization nodes.
+        :param str method: Method of discretization. Defaults to 'mol'.
+        :param str diff_scheme: Differentiation scheme. Defaults to 'central'.
         :return: The generated Domain1D object.
         :rtype: Domain1D
         """
@@ -255,6 +257,81 @@ class Model:
 
         domain_obj = Domain1D(
             name, length, n_points, unit, description, method, diff_scheme
+        )
+        domain_obj._owner_model_instance = self
+        setattr(self, name, domain_obj)
+
+        return domain_obj
+
+    def createRadialDomain(
+        self,
+        name,
+        unit,
+        description="",
+        radius=1.0,
+        n_points=10,
+        method="mol",
+        diff_scheme="central",
+    ):
+        """
+        Factory method to instantiate a 1D Radial domain (Cylindrical coordinates).
+        Automatically incorporates 1/r terms into the gradient and laplacian operators.
+        
+        IMPORTANT NOTE: This creates only the radial symmetric axis. To simulate 
+        multi-dimensional engineering problems (e.g., a tubular reactor), couple this 
+        domain with a Cartesian Domain1D (longitudinal axis) using the Domain2D 
+        tensor product.
+
+        :param str name: Local name of the domain.
+        :param Unit unit: Dimensional length unit.
+        :param float radius: Total physical radius (from r=0 to r=R).
+        :param int n_points: Number of discretization nodes.
+        :param str method: Method of discretization. Defaults to 'mol'.
+        :param str diff_scheme: Differentiation scheme. Defaults to 'central'.
+        :return: The generated RadialDomain object.
+        :rtype: RadialDomain
+        """
+        from .domain import RadialDomain
+
+        domain_obj = RadialDomain(
+            name, radius, n_points, unit, description, method, diff_scheme
+        )
+        domain_obj._owner_model_instance = self
+        setattr(self, name, domain_obj)
+
+        return domain_obj
+
+    def createSphericalDomain(
+        self,
+        name,
+        unit,
+        description="",
+        radius=1.0,
+        n_points=10,
+        method="mol",
+        diff_scheme="central",
+    ):
+        """
+        Factory method to instantiate a 1D Spherical domain (Spherical coordinates).
+        Automatically incorporates 2/r terms into the gradient and laplacian operators.
+        
+        IMPORTANT NOTE: This creates only the radial symmetric axis. In process engineering, 
+        angular symmetries are universally assumed for spherical catalytic particles 
+        and droplets, making this 1D symmetry strictly sufficient for most phenomenological cases.
+
+        :param str name: Local name of the domain.
+        :param Unit unit: Dimensional length unit.
+        :param float radius: Total physical radius (from r=0 to r=R).
+        :param int n_points: Number of discretization nodes.
+        :param str method: Method of discretization. Defaults to 'mol'.
+        :param str diff_scheme: Differentiation scheme. Defaults to 'central'.
+        :return: The generated SphericalDomain object.
+        :rtype: SphericalDomain
+        """
+        from .domain import SphericalDomain
+
+        domain_obj = SphericalDomain(
+            name, radius, n_points, unit, description, method, diff_scheme
         )
         domain_obj._owner_model_instance = self
         setattr(self, name, domain_obj)
