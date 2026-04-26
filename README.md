@@ -1,20 +1,21 @@
-# Project ANTARES 
+# Project ANTARES
 
 ###### (Evolving towards its next iteration)
 
 ![antares_logo](https://github.com/hfsf/antares/blob/main/docs/antares_logo.png?raw=true)
 
-![version](https://img.shields.io/badge/version-0.1.0a-orange?style=for-the-badge)
+![version](https://img.shields.io/badge/version-0.2.0a-orange?style=for-the-badge)
 ![python](https://img.shields.io/badge/python-3.10%2B-blue?style=for-the-badge)
 [![License: GPL](https://img.shields.io/badge/License-GPL-blue.svg?style=for-the-badge)](https://opensource.org/licenses/GPL)
 
 ## What is Project ANTARES?
 
-**Project ANTARES** is an experimental, Python-based computational framework designed for **Equation-Oriented (EO)** modeling and simulation of phenomenological systems. 
+**Project ANTARES** is an experimental, Python-based computational framework designed for **Equation-Oriented (EO)** modeling and simulation of phenomenological systems.
 
 Its primary goal is to bridge the gap between human-readable, declarative engineering models and high-performance numerical solvers. By assembling complex Differential-Algebraic Equations (DAEs) into a single monolithic system, ANTARES solves plant topologies and recycle loops simultaneously, bypassing the convergence issues often found in traditional sequential-modular simulators.
 
 ### The V5 Native Architecture
+
 In its recent V5 iteration, the framework underwent a structural paradigm shift. Intermediate symbolic translation layers (such as SymPy) were completely removed. ANTARES now operates as a direct assembler for **CasADi**, constructing native C++ computational graphs (`ca.MX`) and sparse matrices from the ground up. This eliminates AST (Abstract Syntax Tree) memory explosions and significantly accelerates the compilation of large-scale systems.
 
 ### Core Capabilities
@@ -27,13 +28,13 @@ In its recent V5 iteration, the framework underwent a structural paradigm shift.
 ### Roadmap & Future Horizons
 
 The architecture is being laid out to support advanced numerical methodologies in the future:
+
 - **Advanced Optimization Suite:** Parameter estimation, Nonlinear Model Predictive Control (NMPC), and Dynamic Real-Time Optimization (DRTO) using CasADi's exact Jacobians and Hessians.
 - **Hybrid Modeling:** Exploring pathways to integrate data-driven approaches (Machine Learning) directly into the phenomenological DAE graphs.
 - **Property Delegation:** Continued decoupling of thermodynamic property calculations to specialized external packages.
 - **Hybrid Modeling (Physics + ML):** Integration with Machine Learning frameworks to solve PDEs and enhance phenomenological models using data-driven approaches.
 
-- **Thermodynamic Delegation:** Seamlessly delegating property calculations to specialized external libraries (e.g., *Thermo*, *CoolProp*).
-
+- **Thermodynamic Delegation:** Seamlessly delegating property calculations to specialized external libraries (e.g., _Thermo_, _CoolProp_).
 
 ## Current Status
 

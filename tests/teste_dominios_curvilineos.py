@@ -45,11 +45,11 @@ class PastilhaCatalitica(Model):
         # 1. Domain Creation (Injecting the inner_radius dynamically)
         if base_geo == "cilindro":
             self.r = self.createRadialDomain(
-                "Raio", unit="m", radius=0.1, n_points=100, inner_radius=self.inner_radius
+                "Raio", unit="m", radius=0.1, n_points=500, inner_radius=self.inner_radius
             )
         else:
             self.r = self.createSphericalDomain(
-                "Raio", unit="m", radius=0.1, n_points=100, inner_radius=self.inner_radius
+                "Raio", unit="m", radius=0.1, n_points=500, inner_radius=self.inner_radius
             )
 
         # 2. State Variable (Concentration of Reactant A)

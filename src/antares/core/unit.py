@@ -226,6 +226,38 @@ class Unit:
 
         raise UnexpectedValueError("(Unit, float, int)")
 
+    def __rtruediv__(self, other):
+        """
+        Handles Right True Division to support scalar numerators (e.g., '1/s').
+
+        When the Python `eval()` engine encounters a division where the left
+        operand is a native scalar (like the integer 1) and the right operand
+        is a Unit object, it invokes this magic method. It safely clones the
+        current unit and inverts all its dimensional exponents.
+
+        :param int|float other: The scalar numerator (typically 1).
+        :return: A new Unit object with inverted dimensions.
+        :rtype: Unit
+        :raises TypeError: If the numerator is not a supported scalar type.
+        """
+        if isinstance(other, (int, float)):
+            import copy
+
+            # Create a deep clone to avoid mutating the base unit (e.g., 's')
+            new_unit = copy.deepcopy(self)
+
+            # Invert the sign of all dimensional exponents
+            new_unit.dimension = {
+                base: -exponent for base, exponent in self.dimension.items()
+            }
+
+            # Update the unit's string representation
+            new_unit.name = f"{other}/{self.name}"
+
+            return new_unit
+
+        return NotImplemented
+
     def __pow__(self, power):
         """
         Overloads the exponentiation operator (**). Multiplies the SI dimensions

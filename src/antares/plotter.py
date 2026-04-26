@@ -221,43 +221,61 @@ class Plotter:
 
     def plot_spatial(
         self,
-        variable,
+        variables,
         domain,
         time=None,
         time_index=-1,
         title=None,
         xlabel=None,
-        ylabel=None,
         show=True,
         save_path=None,
         **kwargs,
     ):
         """
-        Generates a spatial profile plot for a 1D distributed variable along
+        Generates a spatial profile plot for 1D distributed variables along
         the geometry at specified time steps.
 
-        :param Variable variable: Target 1D distributed state variable.
+        If a single variable is provided, it can plot its profile across multiple
+        time steps. If a list of TWO variables is provided, it plots both variables
+        at a single time step using a secondary Y-axis (twinx) for aesthetic comparison.
+
+        :param Variable|list variables: Target 1D distributed state variable(s). Max 2.
         :param Domain1D domain: The spatial 1D domain object.
         :param float|list time: Specific physical time(s) to render.
-        :param int|list time_index: Explicit temporal array index(es) to render.
+        :param int|list time_index: Explicit temporal array index(es) to render. Defaults to -1 (steady-state).
         :param str title: Plot title.
         :param str xlabel: Custom X-axis label.
-        :param str ylabel: Custom Y-axis label.
-        :return: The generated matplotlib axis object.
-        :rtype: matplotlib.axes.Axes
+        :param bool show: Whether to render the plot interactively.
+        :param str save_path: System path to export the figure.
+        :return: The generated matplotlib axis object (or tuple of axes if twinx is used).
+        :rtype: matplotlib.axes.Axes | tuple
+        :raises TypeError: If variables are not distributed or domain is not 1D.
+        :raises ValueError: If more than 2 variables are passed.
         """
         self._apply_aesthetics()
 
-        if not getattr(variable, "is_distributed", False):
-            raise TypeError(f"Variable '{variable.name}' is not distributed.")
         if hasattr(domain, "y"):
             raise TypeError(
                 "plot_spatial is for 1D domains. Use plot_heatmap_2d for 2D domains."
             )
 
+        # Normalize variables input to a list
+        if not isinstance(variables, (list, tuple)):
+            variables = [variables]
+
+        if len(variables) > 2:
+            raise ValueError(
+                "plot_spatial supports a maximum of 2 variables simultaneously (using twinx)."
+            )
+
+        for var in variables:
+            if not getattr(var, "is_distributed", False):
+                raise TypeError(f"Variable '{var.name}' is not distributed.")
+
         time_grid = self.results.history.index.values
         indices_to_plot = []
 
+        # Resolve requested times
         if time is not None:
             time_list = (
                 [time] if not isinstance(time, (list, tuple, np.ndarray)) else time
@@ -272,44 +290,102 @@ class Plotter:
             )
             indices_to_plot.extend(idx_list)
 
-        # V5 String Mapping Generation
-        node_names = [
-            f"{variable.name}_{domain.name}_{i}" for i in range(domain.n_points)
-        ]
-
-        fig, ax = plt.subplots(
+        fig, ax1 = plt.subplots(
             figsize=kwargs.pop("figsize", getattr(cfg, "PLOT_FIGSIZE", (10, 6)))
         )
 
-        for idx in indices_to_plot:
-            state_data = self.results.history.iloc[idx][node_names].values
-            ax.plot(
-                domain.grid,
-                state_data,
-                linewidth=kwargs.pop("linewidth", getattr(cfg, "PLOT_LINEWIDTH", 2.5)),
-                marker=kwargs.pop(
-                    "marker",
-                    getattr(cfg, "PLOT_MARKER", "o") if len(time_grid) == 1 else None,
-                ),
-                label=f"t = {time_grid[idx]:.1f} {self.results.time_units}",
-                **kwargs,
-            )
+        linewidth = kwargs.pop("linewidth", getattr(cfg, "PLOT_LINEWIDTH", 2.5))
 
-        ax.set_title(
-            title if title else f"Spatial Profile: {variable.description}",
+        # ---------------------------------------------------------
+        # MODE A: Single Variable (Supports multiple time steps)
+        # ---------------------------------------------------------
+        if len(variables) == 1:
+            var = variables[0]
+            node_names = [
+                f"{var.name}_{domain.name}_{i}" for i in range(domain.n_points)
+            ]
+
+            for idx in indices_to_plot:
+                state_data = self.results.history.iloc[idx][node_names].values
+                ax1.plot(
+                    domain.grid,
+                    state_data,
+                    linewidth=linewidth,
+                    marker=kwargs.pop(
+                        "marker",
+                        getattr(cfg, "PLOT_MARKER", "o")
+                        if len(time_grid) == 1
+                        else None,
+                    ),
+                    label=f"t = {time_grid[idx]:.1f} {self.results.time_units}",
+                    **kwargs,
+                )
+
+            ax1.set_ylabel(f"{var.description} ({var.units.name})", fontsize=12)
+            ax1.legend(fontsize=11, loc="best", frameon=True)
+            out_axes = ax1
+
+        # ---------------------------------------------------------
+        # MODE B: Two Variables (Twin X, Single time step forced)
+        # ---------------------------------------------------------
+        else:
+            idx = indices_to_plot[-1]  # Force single time step for clarity
+            t_val = time_grid[idx]
+
+            ax2 = ax1.twinx()
+            axes = [ax1, ax2]
+            colors = ["tab:blue", "tab:red"]
+            linestyles = ["-", "--"]
+
+            for i, var in enumerate(variables):
+                node_names = [
+                    f"{var.name}_{domain.name}_{j}" for j in range(domain.n_points)
+                ]
+                state_data = self.results.history.iloc[idx][node_names].values
+
+                axes[i].plot(
+                    domain.grid,
+                    state_data,
+                    color=colors[i],
+                    linewidth=linewidth,
+                    linestyle=linestyles[i],
+                    label=var.description,
+                    **kwargs,
+                )
+
+                axes[i].set_ylabel(
+                    f"{var.description} ({var.units.name})",
+                    color=colors[i],
+                    fontsize=12,
+                )
+                axes[i].tick_params(axis="y", labelcolor=colors[i])
+
+            # Consolidate legends from both axes
+            lines_1, labels_1 = ax1.get_legend_handles_labels()
+            lines_2, labels_2 = ax2.get_legend_handles_labels()
+            ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc="best", frameon=True)
+
+            if not title:
+                title = f"Spatial Profiles at t = {t_val:.1f} {self.results.time_units}"
+
+            out_axes = (ax1, ax2)
+
+        # Common Formatting
+        ax1.set_title(
+            title if title else f"Spatial Profile: {variables[0].description}",
             fontsize=14,
             fontweight="bold",
+            pad=15,
         )
-        ax.set_xlabel(
+        ax1.set_xlabel(
             xlabel if xlabel else f"Position {domain.name} ({domain.unit.name})",
             fontsize=12,
         )
-        ax.set_ylabel(
-            ylabel if ylabel else f"{variable.description} ({variable.units.name})",
-            fontsize=12,
-        )
-        ax.legend(fontsize=11, loc="best", frameon=True)
-        plt.tight_layout()
+
+        if not getattr(cfg, "USE_SEABORN_STYLE", True):
+            ax1.grid(True, linestyle="--", alpha=0.7)
+
+        fig.tight_layout()
 
         if save_path:
             plt.savefig(
@@ -317,7 +393,8 @@ class Plotter:
             )
         if show:
             plt.show()
-        return ax
+
+        return out_axes
 
     def plot_heatmap_2d(
         self,
