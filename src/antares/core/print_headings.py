@@ -11,7 +11,7 @@ import datetime
 import antares.core.GLOBAL_CFG as cfg
 
 # V5 Architecture Release
-version = "v.0.0.6a"
+version = "v.0.2.0a"
 
 _BANNER_PRINTED = False
 

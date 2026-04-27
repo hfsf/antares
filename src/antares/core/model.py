@@ -277,24 +277,14 @@ class Model:
         """
         Factory method to instantiate a 1D Radial domain (Cylindrical coordinates).
         Automatically incorporates 1/r terms into the gradient and laplacian operators.
-        
-        ANNULAR DOMAINS VS SOLID CYLINDERS:
-        If `inner_radius == 0.0` (Solid), the framework applies L'Hôpital's rule at the core 
-        to handle the mathematical singularity, enforcing continuous symmetry.
-        If `inner_radius > 0.0` (Annular/Hollow), the domain opens up, exposing the inner 
-        wall boundary for user-defined Dirichlet or Neumann conditions.
-
-        IMPORTANT NOTE: This creates only the radial symmetric axis. To simulate 
-        multi-dimensional engineering problems (e.g., a tubular reactor), couple this 
-        domain with a Cartesian Domain1D (longitudinal axis) using the Domain2D tensor product.
 
         :param str name: Local name of the domain.
         :param Unit unit: Dimensional length unit.
-        :param float radius: Total physical outer radius (from inner_radius to R).
+        :param float radius: Total physical outer radius.
         :param int n_points: Number of discretization nodes.
         :param str method: Method of discretization. Defaults to 'mol'.
         :param str diff_scheme: Differentiation scheme. Defaults to 'central'.
-        :param float inner_radius: Starting radius for annular configurations. Defaults to 0.0.
+        :param float inner_radius: Starting radius for annular configurations.
         :return: The generated RadialDomain object.
         :rtype: RadialDomain
         """
@@ -322,24 +312,14 @@ class Model:
         """
         Factory method to instantiate a 1D Spherical domain (Spherical coordinates).
         Automatically incorporates 2/r terms into the gradient and laplacian operators.
-        
-        ANNULAR DOMAINS VS SOLID SPHERES:
-        If `inner_radius == 0.0` (Solid), the framework applies L'Hôpital's rule at the core 
-        to handle the mathematical singularity, enforcing continuous symmetry.
-        If `inner_radius > 0.0` (Hollow), the domain opens up, exposing the inner 
-        wall boundary for user-defined Dirichlet or Neumann conditions.
-
-        IMPORTANT NOTE: This creates only the radial symmetric axis. In process engineering, 
-        angular symmetries are universally assumed for spherical catalytic particles 
-        and droplets, making this 1D symmetry strictly sufficient for most phenomenological cases.
 
         :param str name: Local name of the domain.
         :param Unit unit: Dimensional length unit.
-        :param float radius: Total physical outer radius (from inner_radius to R).
+        :param float radius: Total physical outer radius.
         :param int n_points: Number of discretization nodes.
         :param str method: Method of discretization. Defaults to 'mol'.
         :param str diff_scheme: Differentiation scheme. Defaults to 'central'.
-        :param float inner_radius: Starting radius for hollow configurations. Defaults to 0.0.
+        :param float inner_radius: Starting radius for hollow configurations.
         :return: The generated SphericalDomain object.
         :rtype: SphericalDomain
         """
@@ -370,6 +350,16 @@ class Model:
     # INITIAL & BOUNDARY CONDITIONS (V5 Vector-Safe)
     # =========================================================================
 
+    def fix_variable(self, variable, value):
+        """
+        Explicitly fixes a variable's value by generating a structural equality constraint.
+        Acts as a Master Model wrapper for the intrinsic `variable.fix(value)` method.
+
+        :param Variable variable: Target variable to be fixed.
+        :param float value: The numerical value to apply.
+        """
+        variable.fix(value)
+
     def setInitialCondition(self, variable, value, location=None):
         """
         Sets Initial Conditions safely.
@@ -379,7 +369,10 @@ class Model:
         :param tuple|slice location: Optional specific node location.
         """
         if not getattr(variable, "is_distributed", False):
-            variable.setValue(value)
+            if hasattr(variable, "setValue"):
+                variable.setValue(value)
+            else:
+                variable.value = value
         else:
             variable.setVectorialInitialCondition(value, location)
 

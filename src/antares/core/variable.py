@@ -94,8 +94,7 @@ class Variable(Quantity):
         self.n_points = domain.n_points
         self.mesh_indices = domain.get_mesh_indices()
 
-        # V5 VECTORIAL RE-ALLOCATION: The core of the new architecture
-        # Allocates a 1D column vector in C++ representing the entire spatial mesh
+        # V5 VECTORIAL RE-ALLOCATION
         self.symbolic_object = ca.MX.sym(self.name, self.n_points)
 
         # Reset DAE topological maps
@@ -120,10 +119,50 @@ class Variable(Quantity):
                 f"model.createVariable() to be bound to a parent Model instance."
             )
 
+    def fix(self, value):
+        """
+        Fixes the variable to a constant numerical value by dynamically generating
+        a structural equality constraint (residual) in the owner model.
+
+        This method completely hides the Equation-Oriented (EO) abstraction leak,
+        allowing the user to set stream specifications intuitively without
+        manually declaring residual equations. It also updates the initial
+        guess for the solver to ensure numerical consistency at t=0.
+
+        :param float value: The numerical value to fix the variable to.
+        :raises RuntimeError: If the variable is not bound to a parent Model instance.
+        """
+        if not hasattr(self, "_owner_model_instance") or self._owner_model_instance is None:
+            raise RuntimeError(
+                f"Variable '{self.name}' is orphaned! Cannot fix a value "
+                "without an assigned owner model."
+            )
+
+        # 1. Update the Initial Guess for Newton-Raphson solver consistency
+        if not self.is_distributed:
+            if hasattr(self, "setValue"):
+                self.setValue(value)
+            else:
+                self.value = value
+                self.initial_condition_array[:] = value
+        else:
+            self.setVectorialInitialCondition(value)
+
+        # 2. Automatically generate the structural residual (Var - Value = 0)
+        # Leverages the overloaded __sub__ operator from EquationNode
+        residual_expr = self() - value
+
+        # 3. Inject the explicit equation directly into the owner model
+        eq_name = f"Spec_{self.name}"
+        desc = f"Explicit DOF specification for {self.name}"
+
+        self._owner_model_instance.createEquation(
+            name=eq_name, description=desc, expr=residual_expr
+        )
+
     def setNodeType(self, indices, new_type):
         """
         Overrides the DAE classification for a specific subset of the variable.
-        Vital for establishing Algebraic boundaries in Differential fields.
 
         :param array-like indices: Flat indices of the targeted nodes.
         :param str new_type: The new DAE type (e.g., 'algebraic').
@@ -156,7 +195,6 @@ class Variable(Quantity):
     def Diff(self, ind_var=None):
         """
         Applies the temporal derivative operator.
-        In V5, directly instantiates the companion `_dot` CasADi symbolic vector.
 
         :param ind_var: Optional independent variable (typically time).
         :return: An EquationNode representing the temporal derivative vector.
@@ -165,7 +203,6 @@ class Variable(Quantity):
         dim = self.n_points if self.is_distributed else 1
         sym_dot = ca.MX.sym(self.name + "_dot", dim)
 
-        # Delegates physical unit resolution to the native operator
         dummy_diff_node = _Diff(self, ind_var)
         time_derivative_unit = dummy_diff_node.unit_object
 
