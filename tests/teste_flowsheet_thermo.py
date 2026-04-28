@@ -7,7 +7,7 @@ Demonstrates the integration of Topological Streams, Hybrid Thermodynamics
 
 Process Description:
 An exothermic reaction occurs in a Tubular Reactor.
-The feed is modeled using a Multicomponent Equation of State (EOS) fetching
+The feed is modeled using a Rigorous Equation of State (Peng-Robinson EOS) fetching
 real data from the `thermo` database.
 The reactor dynamically creates its own thermal port (EnergyStream) and
 material port (MaterialStream), completely hiding the boundary conditions
@@ -23,7 +23,7 @@ from antares.core.connection import Connection
 from antares.core.expression_evaluation import EquationNode
 from antares.core.model import Model
 from antares.core.stream import EnergyStream, MaterialStream
-from antares.core.thermo_package import MulticomponentEOS, PureFluidLUT
+from antares.core.thermo_package import PengRobinsonEOS, PureFluidLUT
 from antares.core.unit import Unit
 from antares.plotter import Plotter
 
@@ -56,6 +56,7 @@ class TubularReactor(Model):
         self()
 
     def DeclareVariables(self):
+        """Declares spatial domains, state variables, and topological ports."""
         # 1. Spatial Domain
         self.z = self.createDomain(
             "z", unit="m", length=self.L, n_points=self.N, diff_scheme="backward"
@@ -80,15 +81,14 @@ class TubularReactor(Model):
         # =====================================================================
         self.heat_port = EnergyStream("Jacket_Port", stream_type="heat")
 
-        # The inlet port now utilizes the injected thermodynamic package
         self.inlet = MaterialStream(
             "Inlet_Port", property_package=self.property_package
         )
 
-        # Register the ports as submodels of the reactor
         self.submodels.extend([self.heat_port, self.inlet])
 
     def DeclareParameters(self):
+        """Declares geometric, kinetic, and transport parameters."""
         self.v = self.createParameter("v", "m/s", value=0.5)
         self.Deff = self.createParameter("Deff", "m^2/s", value=0.01)
         self.k0 = self.createParameter("k0", "s^-1", value=0.8)
@@ -98,6 +98,7 @@ class TubularReactor(Model):
         self.Diameter = self.createParameter("Diameter", "m", value=0.2)
 
     def DeclareEquations(self):
+        """Declares the governing PDEs and boundary constraints."""
         # =====================================================================
         # 1. 1D+t PDEs (Mass and Energy Balances)
         # =====================================================================
@@ -111,7 +112,6 @@ class TubularReactor(Model):
         convection_energy = self.v() * self.z.apply_gradient(self.T)
         heat_generation = (-self.dH_rxn()) * reaction_rate
 
-        # The local driving force uses the Temperature from the heat_port
         heat_removal_local = (4.0 * self.U() / self.Diameter()) * (
             self.T() - self.heat_port.T_source()
         )
@@ -122,66 +122,39 @@ class TubularReactor(Model):
         self.addBulkEquation("Energy_Balance", eq_energy, self.z)
 
         # =====================================================================
-        # 2. INTERNAL HEAT INTEGRATION (Hidden from the end-user)
+        # 2. INTERNAL HEAT INTEGRATION
         # =====================================================================
         dz = self.L / (self.N - 1)
-
         T_sym = self.T.symbolic_object
         T_jack_sym = (
             self.heat_port.T_source.symbolic_object
             if hasattr(self.heat_port.T_source, "symbolic_object")
             else self.heat_port.T_source()
         )
-        U_sym = (
-            self.U.symbolic_object if hasattr(self.U, "symbolic_object") else self.U()
-        )
-        D_sym = (
-            self.Diameter.symbolic_object
-            if hasattr(self.Diameter, "symbolic_object")
-            else self.Diameter()
-        )
+        U_sym = self.U.symbolic_object if hasattr(self.U, "symbolic_object") else self.U()
+        D_sym = self.Diameter.symbolic_object if hasattr(self.Diameter, "symbolic_object") else self.Diameter()
 
         area_per_node = np.pi * D_sym * dz
-
-        # CasADi C++ Vectorized summation
         total_heat_sym = ca.sum1(U_sym * area_per_node * (T_sym - T_jack_sym))
 
         total_heat_expr = EquationNode(
-            name="Q_total_sum",
-            symbolic_object=total_heat_sym,
-            unit_object=Unit("", "W"),
+            name="Q_total_sum", symbolic_object=total_heat_sym, unit_object=Unit("", "W")
         )
 
-        # The Reactor internally forces its heat_port to match the integrated Q
         self.createEquation(
             "Internal_Heat_Routing", expr=self.heat_port.Q() - total_heat_expr
         )
 
         # =====================================================================
-        # 3. INTERNAL BOUNDARY CONDITIONS (Hidden from the end-user)
+        # 3. INTERNAL BOUNDARY CONDITIONS
         # =====================================================================
-        # The Reactor pulls the values directly from its own MaterialStream port!
-
-        # 1. Tube cross-sectional area (m^2)
         A_cross = np.pi * (self.Diameter() ** 2) / 4.0
-
-        # 2. Volumetric flow rate (m^3/s)
         q_vol = self.v() * A_cross
-
-        # 3. Specific molar flow of ethanol (mol/s)
         F_ethanol = self.inlet.F_molar() * self.inlet.z["ethanol"]()
-
-        # 4. Actual boundary concentration (mol/m^3)
-        # The Dimensional Guardian automatically validates: (mol/s) / (m^3/s) = mol/m^3
         C_A_inlet = F_ethanol / q_vol
 
-        self.setBoundaryCondition(
-            self.C_A, self.z, "start", "dirichlet", value=C_A_inlet
-        )
-        self.setBoundaryCondition(
-            self.T, self.z, "start", "dirichlet", value=self.inlet.T()
-        )
-
+        self.setBoundaryCondition(self.C_A, self.z, "start", "dirichlet", value=C_A_inlet)
+        self.setBoundaryCondition(self.T, self.z, "start", "dirichlet", value=self.inlet.T())
         self.setBoundaryCondition(self.C_A, self.z, "end", "neumann", value=0.0)
         self.setBoundaryCondition(self.T, self.z, "end", "neumann", value=0.0)
 
@@ -200,32 +173,23 @@ class ProcessFlowsheet(Model):
         self()
 
     def DeclareVariables(self):
+        """Declares all unit operations and streams."""
         # 1. PROPERTY PACKAGES
-        self.pkg_reactants = MulticomponentEOS(components=["ethanol", "water"])
+        self.pkg_reactants = PengRobinsonEOS(components=["ethanol", "water"])
         self.pkg_reactants.fetch_parameters_from_db()
 
         self.pkg_utility = PureFluidLUT(fluid_name="water")
-        self.pkg_utility.thermo_data = {
-            "T_grid": [280.0, 300.0, 320.0, 340.0, 360.0],
-            "P_grid": [1.0, 2.0, 3.0],
-            "H_matrix": np.random.uniform(4000, 80000, (5, 3)),
-        }
 
         # 2. TOPOLOGICAL STREAMS
         self.feed_stream = MaterialStream("Feed", property_package=self.pkg_reactants)
         self.utility_stream = EnergyStream("Cooling_Utility", stream_type="heat")
 
         # 3. UNIT OPERATIONS
-        # We pass the thermodynamic package to the Reactor
         self.reactor = TubularReactor(
             "R1", property_package=self.pkg_reactants, length=5.0, n_points=50
         )
 
-        # =====================================================================
-        # INITIAL GUESSES (Provides consistency to the solver's z0 vector)
-        # =====================================================================
-        # Iterate over streams and ports to ensure the algebraic
-        # vector (z0) has all elements populated to avoid singular Jacobians at t=0.
+        # Pre-filling initial conditions to maintain Matrix numerical stability
         all_topological_units = [
             self.feed_stream,
             self.utility_stream,
@@ -245,28 +209,17 @@ class ProcessFlowsheet(Model):
             if hasattr(unit, "T_source"):
                 unit.T_source.setValue(300.0)
 
-        # Register all topological entities to guarantee DOF closure
         self.submodels.extend([self.feed_stream, self.utility_stream, self.reactor])
 
     def DeclareEquations(self):
-        # =====================================================================
-        # SPECIFICATIONS (Fixing Degrees of Freedom via Abstraction)
-        # =====================================================================
-        # The user interacts declaratively. Residual equations are generated natively.
+        """Declares specifications and connections."""
         self.feed_stream.T.fix(350.0)
         self.feed_stream.P.fix(1.01325)
         self.feed_stream.F_molar.fix(100.0)
         self.feed_stream.z["ethanol"].fix(1.0)
-
         self.utility_stream.T_source.fix(300.0)
 
-        # =====================================================================
-        # TOPOLOGICAL ROUTING
-        # =====================================================================
-        # The flowsheet is now extremely clean: plug outputs directly to inputs
-        Connection(
-            "Connect_Utility", self.utility_stream, self.reactor.heat_port
-        ).apply_to(self)
+        Connection("Connect_Utility", self.utility_stream, self.reactor.heat_port).apply_to(self)
         Connection("Connect_Feed", self.feed_stream, self.reactor.inlet).apply_to(self)
 
 
@@ -291,7 +244,6 @@ if __name__ == "__main__":
 
     plotter = Plotter(results)
 
-    # 1. Transient Plot: 1D+t PDE revealed in Concentration!
     plotter.plot_spatial(
         variables=flowsheet.reactor.C_A,
         domain=flowsheet.reactor.z,
@@ -299,7 +251,6 @@ if __name__ == "__main__":
         title="1D+t PDE: Transient Concentration Evolution (C_A)",
     )
 
-    # 2. Transient Plot: 1D+t PDE revealed in Temperature!
     plotter.plot_spatial(
         variables=flowsheet.reactor.T,
         domain=flowsheet.reactor.z,
@@ -307,7 +258,6 @@ if __name__ == "__main__":
         title="1D+t PDE: Transient Temperature Evolution (T)",
     )
 
-    # 3. Final Steady-State Plot
     plotter.plot_spatial(
         variables=[flowsheet.reactor.C_A, flowsheet.reactor.T],
         domain=flowsheet.reactor.z,

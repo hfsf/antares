@@ -5,8 +5,14 @@ Simulator Module (V5 Native CasADi Architecture).
 
 Defines the Simulator class for the ANTARES framework.
 This module receives the phenomenological model, triggers the native C++
-DAE Assembler (legacy Transpiler), and orchestrates the numerical resolution
-using CasADi's high-performance SUNDIALS integrators and rootfinders.
+DAE Assembler, and orchestrates the numerical resolution using CasADi's 
+high-performance SUNDIALS integrators and rootfinders.
+
+It features a Smart Dispatcher that introspects the mathematical structure
+of the formulated system. If a purely algebraic topology is detected, it
+automatically bypasses dynamic integration and resolves the steady-state 
+roots, propagating the result over the requested timespan to ensure API continuity
+without requiring dummy differential states.
 """
 
 import glob
@@ -36,7 +42,7 @@ class Simulator:
 
     def __init__(self, model, solver_type=None, check_dof=None):
         """
-        Initializes the Simulator.
+        Initializes the Simulator context.
 
         :param Model model: The formulated ANTARES model.
         :param str solver_type: Target solver suite (e.g., 'idas', 'cvodes'). Defaults to GLOBAL_CFG.
@@ -338,7 +344,13 @@ class Simulator:
         linear_solver=None,
     ):
         """
-        Executes the dynamic integration of the assembled DAE system over the specified time span.
+        Executes the resolution of the assembled DAE system over the specified time span.
+        
+        Features a Smart Dispatcher algorithm: If the model is completely algebraic 
+        (zero differential states), it automatically intercepts the execution, bypasses 
+        the dynamic integrator (IDAS), and utilizes the Rootfinder (KINSOL). The steady-state 
+        solution is then dynamically propagated over the specified `t_span` to mimic temporal
+        continuity without relying on numerical dummy-hacks.
 
         :param array-like t_span: 1D array of time points for integration.
         :param dict initial_conditions: Explicit mapping of variable names to initial values.
@@ -348,6 +360,53 @@ class Simulator:
         :return: A container holding the integrated temporal trajectories.
         :rtype: Results
         """
+        n_x = self.dae_structure["x"].size1() if "x" in self.dae_structure else 0
+
+        # =====================================================================
+        # SMART DISPATCHER: Intercepts Pure Algebraic Systems (Steady-State)
+        # =====================================================================
+        if n_x == 0:
+            if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
+                print("\n[SMART DISPATCHER] No differential variables detected (nx = 0).")
+                print("Intercepting dynamic integration and routing directly to KINSOL Rootfinder...")
+            
+            do_c_code = use_c_code if use_c_code is not None else getattr(cfg, "USE_C_CODE_COMPILATION", False)
+            do_lin_sol = linear_solver if linear_solver is not None else getattr(cfg, "DEFAULT_LINEAR_SOLVER", "direct")
+
+            ig_dict = initial_conditions if initial_conditions is not None else {}
+            p_dict = parameters_dict if parameters_dict is not None else {}
+
+            self._compile_rootfinder(use_c_code=do_c_code, linear_solver=do_lin_sol)
+
+            z0_vec = self._get_initial_vector(ig_dict, category="algebraic")
+            p_vec = self._get_parameter_vector(p_dict)
+
+            res = self._rootfinder(x0=z0_vec, p=p_vec)
+            z_sol = res["x"].full().flatten()
+
+            results_container = Results(
+                name=f"Sim_{self.model.name}",
+                time_units=getattr(cfg, "DEFAULT_TIME_UNIT", "s"),
+            )
+            x_names, z_names = self._generate_names_list()
+
+            # Broadcast the steady-state solution across the entire requested time span
+            n_t = len(t_span)
+            x_res = np.empty((n_t, 0))
+            z_res = np.tile(z_sol, (n_t, 1))
+
+            results_container.load_from_simulator(t_span, x_res, z_res, x_names, z_names)
+
+            if do_c_code:
+                self._cleanup_compilation_files()
+            if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
+                print("Steady-State roots evaluated and propagated over the timespan successfully!\n")
+            
+            return results_container
+
+        # =====================================================================
+        # STANDARD EXECUTION: Dynamic DAE Integration (nx > 0)
+        # =====================================================================
         do_c_code = (
             use_c_code
             if use_c_code is not None
@@ -389,6 +448,7 @@ class Simulator:
             self._cleanup_compilation_files()
         if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
             print("Dynamic Simulation successfully completed!")
+        
         return results_container
 
     def run_steady_state(
@@ -399,14 +459,15 @@ class Simulator:
         linear_solver=None,
     ):
         """
-        Executes a steady-state resolution (Rootfinding) of the assembled DAE system.
-        Derivatives are internally zeroed, and algebraic constraints are solved.
+        Executes an explicit steady-state resolution (Rootfinding) of the assembled DAE system.
+        Derivatives of any existent dynamic variables are internally zeroed, and all constraints 
+        are treated as an algebraic rootfinding problem.
 
         :param dict initial_guesses: Explicit mapping of variable names to initial numerical guesses.
         :param dict parameters_dict: Explicit mapping of parameter names to specific values.
         :param bool use_c_code: Overrides the global JIT compilation setting.
         :param str linear_solver: Overrides the global linear solver setting.
-        :return: A container holding the steady-state solution vector.
+        :return: A container holding the steady-state solution vector at an arbitrary t=0.
         :rtype: Results
         """
         do_c_code = (
@@ -459,4 +520,5 @@ class Simulator:
             self._cleanup_compilation_files()
         if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
             print("Steady-State solution successfully found!")
+        
         return results_container

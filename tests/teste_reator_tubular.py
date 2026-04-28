@@ -87,7 +87,7 @@ if __name__ == "__main__":
 
     # Gráfico 2: Perfis Espaciais Sobrepostos (Frente de Onda Térmica)
     plotador.plot_spatial(
-        variable=reator.T,
+        variables=reator.T,
         domain=reator.z,
         time=[0.0, 5.0, 10.0, 20.0, 30.0],
         title="Propagação da Frente Térmica no Reator",

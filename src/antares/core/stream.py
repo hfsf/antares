@@ -68,8 +68,6 @@ class TwoPhaseStream(Model):
         self.H_molar = self.createVariable("H_molar", "J/mol", description="Overall Molar Enthalpy", value=0.0, exposure_type="algebraic")
 
         # 2. Phase Partition Variable (Theta)
-        # Note: Bounds are slightly relaxed [-0.05, 1.05] to prevent Newton-Raphson
-        # derivative singularities when passing through subcooled/superheated regions.
         self.V_frac = self.createVariable(
             "V_frac", "", description="Vapor Phase Molar Fraction",
             lower_bound=-0.05, upper_bound=1.05, value=0.5, exposure_type="algebraic"
@@ -83,21 +81,25 @@ class TwoPhaseStream(Model):
 
         for comp in self.components:
             self.z[comp] = self.createVariable(f"z_{comp}", "", value=1.0 / n_comp, exposure_type="algebraic")
-            self.x[comp] = self.createVariable(f"x_{comp}", "", value=1.0 / n_comp, exposure_type="algebraic")
-            self.y[comp] = self.createVariable(f"y_{comp}", "", value=1.0 / n_comp, exposure_type="algebraic")
+            
+            # =================================================================
+            # BILINEARITY TRAP FIX: Assimetria Numérica Nativa
+            # =================================================================
+            # O líquido e o vapor nascem matematicamente afastados (0.1 e 0.9)
+            # impedindo que a matriz de difusão colapse na iteração t=0 do CasADi.
+            self.x[comp] = self.createVariable(f"x_{comp}", "", value=0.1, exposure_type="algebraic")
+            self.y[comp] = self.createVariable(f"y_{comp}", "", value=0.9, exposure_type="algebraic")
 
     def DeclareEquations(self):
         # 1. Overall Mass Closure
         sum_z = sum(self.z[comp]() for comp in self.components)
         self.createEquation("Overall_Fractions_Sum", description="Overall fractions unity sum", expr=sum_z - 1.0)
 
-        # 2. Rachford-Rice Isothermal Objective (Implicit Summation)
-        # Guarantees that both liquid and vapor phases sum to 1 independently.
+        # 2. Rachford-Rice Isothermal Objective
         sum_y = sum(self.y[comp]() for comp in self.components)
         sum_x = sum(self.x[comp]() for comp in self.components)
         self.createEquation("Rachford_Rice_Objective", description="Phase fractions strict closure", expr=sum_y - sum_x)
 
-        # Component-wise balances and equilibrium mapping
         for comp in self.components:
             z_c = self.z[comp]()
             x_c = self.x[comp]()
@@ -108,11 +110,8 @@ class TwoPhaseStream(Model):
             mass_bal_expr = z_c - (v_f * y_c + (1.0 - v_f) * x_c)
             self.createEquation(f"Mass_Bal_{comp}", description=f"Phase allocation for {comp}", expr=mass_bal_expr)
 
-            # 4. Vapor-Liquid Equilibrium (VLE) partitioning
-            # y_i = K_i * x_i
-            K_expr = self.property_package.get_K_value(self.T(), self.P(), comp)
-            eq_partition_expr = y_c - (K_expr * x_c)
-            self.createEquation(f"VLE_Partition_{comp}", description=f"VLE K-value for {comp}", expr=eq_partition_expr)
+        # 4. Dependency Injection: Equilibrium physics from Thermo Package
+        self.property_package.build_phase_equilibrium(self)
 
         # 5. Global Energy/Enthalpy Closure
         x_sym_dict = {comp: self.x[comp]() for comp in self.components}
@@ -121,13 +120,11 @@ class TwoPhaseStream(Model):
         H_liq_expr = self.property_package.get_phase_enthalpy_expression(self.T(), self.P(), x_sym_dict, phase="liquid")
         H_vap_expr = self.property_package.get_phase_enthalpy_expression(self.T(), self.P(), y_sym_dict, phase="vapor")
 
-        # H_overall = V * H_vap + (1 - V) * H_liq
         global_h_expr = self.H_molar() - (self.V_frac() * H_vap_expr + (1.0 - self.V_frac()) * H_liq_expr)
         self.createEquation("Global_Enthalpy_Closure", description="Two-phase enthalpy mix", expr=global_h_expr)
 
 
 class EnergyStream(Model):
-    # (Mantido inalterado conforme a implementação robusta anterior)
     def __init__(self, name, stream_type="heat", description=""):
         self.stream_type = str(stream_type).lower()
         super().__init__(name, description)
