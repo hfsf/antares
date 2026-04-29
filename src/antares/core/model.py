@@ -3,12 +3,12 @@
 """
 Model Module (V5 Native CasADi Architecture).
 
-Defines the Model class for the ANTARES framework.
-This class acts as the central mathematical container, orchestrating equations,
-variables, parameters, and constants.
-In the V5 Architecture, it acts as a pure declarative interface, delegating all
-CasADi C++ graph generation to its underlying objects and topology assignments
-to the Domains, completely free of SymPy scalar unrolling or symbolic tracking.
+Defines the central mathematical container for equations and variables.
+Upgraded with dynamic attribute overriding (__setattr__) to automatically 
+register submodels and instantly propagate abstract objects upwards, 
+ensuring a zero-leak declarative Equation-Oriented (EO) environment while
+maintaining strict backward compatibility with positional APIs and legacy
+initialization sequences.
 """
 
 import numpy as np
@@ -34,9 +34,9 @@ except ImportError:
 
 class Model:
     """
-    Base Model class definition.
-    Users must inherit from this class and implement the declarative methods
-    (DeclareVariables, DeclareEquations, etc.) to construct phenomenological systems.
+    Base Model class definition for phenomenological systems.
+    Acts as an implicit topological graph node in the flowsheet.
+    Users must inherit from this class to declare process models.
     """
 
     def __init__(self, name, description="", submodels=None):
@@ -51,6 +51,7 @@ class Model:
         self.name = name
         self.description = description
         self.submodels = submodels if submodels is not None else []
+        self.parent = None  # Reference to the flowsheet parent
 
         self.variables = {}
         self.parameters = {}
@@ -59,12 +60,37 @@ class Model:
 
         self.exposed_vars = {"input": [], "output": []}
 
+        # Establish parent-child relationship for explicitly passed submodels
+        for child in self.submodels:
+            child.parent = self
+
+    def __setattr__(self, key, value):
+        """
+        Overrides default attribute assignment to auto-register submodels.
+        This guarantees zero abstraction leaks by instantly linking the hierarchy
+        without requiring manual submodel extension. Includes an initialization 
+        guard to support pre-super() instantiations.
+
+        :param str key: Attribute name.
+        :param object value: Object being assigned.
+        """
+        super().__setattr__(key, value)
+        
+        # Intercept submodel assignment to link hierarchy reactively.
+        # The hasattr guard ensures we don't intercept assignments made BEFORE 
+        # super().__init__ is called in the child class (legacy initialization).
+        if isinstance(value, Model) and key not in ["parent", "_owner_model_instance"]:
+            if hasattr(self, "variables") and hasattr(self, "submodels"):
+                if value not in self.submodels:
+                    self.submodels.append(value)
+                if getattr(value, "parent", None) is not self:
+                    value.parent = self
+                    self.incorporateFromExternalModel(value)
+
     def __call__(self):
         """
         Resolves the configuration of the model and its hierarchical submodels.
         Executes the declarative lifecycle methods.
-
-        :raises UnexpectedObjectDeclarationError: If STRICT_MODE is enabled and the model is empty.
         """
         self.DeclareConstants()
         self.DeclareParameters()
@@ -78,26 +104,32 @@ class Model:
             raise UnexpectedObjectDeclarationError(
                 f"No variables declared in '{self.name}'."
             )
-        if len(self.equations) == 0 and getattr(cfg, "STRICT_MODE", False):
-            raise UnexpectedObjectDeclarationError(
-                f"No equations declared in '{self.name}'."
-            )
+
+    def _propagate_object_upward(self, obj, category):
+        """
+        Recursively registers a mathematical object into the parent hierarchy.
+        Ensures dynamic objects (like .fix() equations) reach the root flowsheet.
+
+        :param object obj: The ANTARES mathematical object to propagate.
+        :param str category: The target dictionary (e.g., 'variables', 'equations').
+        """
+        getattr(self, category)[obj.name] = obj
+        if self.parent is not None:
+            self.parent._propagate_object_upward(obj, category)
 
     def incorporateFromExternalModel(self, child_model):
         """
-        Absorbs objects from a submodel into this master Flowsheet.
-        Due to V5 Native CasADi memory referencing, namespace conflicts are
-        handled intrinsically without requiring expression string sweeps.
+        Absorbs all objects from a nested submodel and triggers upward propagation.
 
         :param Model child_model: The instantiated submodel to absorb.
         """
-        self.variables.update(child_model.variables)
-        self.parameters.update(child_model.parameters)
-        self.constants.update(child_model.constants)
-        self.equations.update(child_model.equations)
+        child_model.parent = self
+        for category in ["variables", "parameters", "constants", "equations"]:
+            for obj in getattr(child_model, category).values():
+                self._propagate_object_upward(obj, category)
 
     # =========================================================================
-    # FACTORY METHODS (V5 NATIVE ALLOCATION)
+    # FACTORY METHODS (STRICT API SIGNATURES RESTORED)
     # =========================================================================
 
     def createVariable(
@@ -116,11 +148,17 @@ class Model:
     ):
         """
         Factory method to instantiate a Variable and bind it to the model.
-        Automatically handles namespace scoping for the CasADi C++ symbol.
 
         :param str name: Local name of the variable.
         :param Unit units: Dimensional unit object.
         :param str description: Physical description.
+        :param bool is_lower_bounded: Flag for active lower bounds.
+        :param bool is_upper_bounded: Flag for active upper bounds.
+        :param float lower_bound: Numerical minimum limit.
+        :param float upper_bound: Numerical maximum limit.
+        :param bool is_exposed: True if the variable acts as a flowsheet port.
+        :param str exposure_type: DAE classification (e.g., 'differential', 'algebraic').
+        :param str latex_text: LaTeX formatting string.
         :param float value: Nominal initial value.
         :return: The generated Variable object.
         :rtype: Variable
@@ -144,9 +182,9 @@ class Model:
         )
 
         var._owner_model_instance = self
-
         self.variables[scoped_name] = var
         setattr(self, name, var)
+        self._propagate_object_upward(var, "variables")
 
         if is_exposed:
             self.exposed_vars[exposure_type].append(var)
@@ -159,6 +197,9 @@ class Model:
 
         :param str name: Local name of the parameter.
         :param Unit units: Dimensional unit object.
+        :param str description: Physical description.
+        :param float value: Nominal value.
+        :param str latex_text: LaTeX formatting string.
         :return: The generated Parameter object.
         :rtype: Parameter
         """
@@ -177,6 +218,7 @@ class Model:
         par._owner_model_instance = self
         self.parameters[scoped_name] = par
         setattr(self, name, par)
+        self._propagate_object_upward(par, "parameters")
 
         return par
 
@@ -186,6 +228,9 @@ class Model:
 
         :param str name: Local name of the constant.
         :param Unit units: Dimensional unit object.
+        :param str description: Physical description.
+        :param float value: Constant numerical value.
+        :param str latex_text: LaTeX formatting string.
         :return: The generated Constant object.
         :rtype: Constant
         """
@@ -204,6 +249,7 @@ class Model:
         con._owner_model_instance = self
         self.constants[scoped_name] = con
         setattr(self, name, con)
+        self._propagate_object_upward(con, "constants")
 
         return con
 
@@ -213,7 +259,7 @@ class Model:
 
         :param str name: Local name of the equation.
         :param str description: Physical description.
-        :param EquationNode|tuple expr: The residual expression or equality tuple.
+        :param EquationNode|tuple expr: The residual expression.
         :return: The generated Equation object.
         :rtype: Equation
         """
@@ -228,6 +274,7 @@ class Model:
 
         self.equations[scoped_name] = eq
         setattr(self, name, eq)
+        self._propagate_object_upward(eq, "equations")
 
         return eq
 
@@ -246,6 +293,7 @@ class Model:
 
         :param str name: Local name of the domain.
         :param Unit unit: Dimensional length unit.
+        :param str description: Physical description.
         :param float length: Total physical length.
         :param int n_points: Number of discretization nodes.
         :param str method: Method of discretization. Defaults to 'mol'.
@@ -276,25 +324,15 @@ class Model:
     ):
         """
         Factory method to instantiate a 1D Radial domain (Cylindrical coordinates).
-        Automatically incorporates 1/r terms into the gradient and laplacian operators.
-        
-        ANNULAR DOMAINS VS SOLID CYLINDERS:
-        If `inner_radius == 0.0` (Solid), the framework applies L'Hôpital's rule at the core 
-        to handle the mathematical singularity, enforcing continuous symmetry.
-        If `inner_radius > 0.0` (Annular/Hollow), the domain opens up, exposing the inner 
-        wall boundary for user-defined Dirichlet or Neumann conditions.
-
-        IMPORTANT NOTE: This creates only the radial symmetric axis. To simulate 
-        multi-dimensional engineering problems (e.g., a tubular reactor), couple this 
-        domain with a Cartesian Domain1D (longitudinal axis) using the Domain2D tensor product.
 
         :param str name: Local name of the domain.
         :param Unit unit: Dimensional length unit.
-        :param float radius: Total physical outer radius (from inner_radius to R).
+        :param str description: Physical description.
+        :param float radius: Total physical outer radius.
         :param int n_points: Number of discretization nodes.
         :param str method: Method of discretization. Defaults to 'mol'.
         :param str diff_scheme: Differentiation scheme. Defaults to 'central'.
-        :param float inner_radius: Starting radius for annular configurations. Defaults to 0.0.
+        :param float inner_radius: Starting radius for annular configurations.
         :return: The generated RadialDomain object.
         :rtype: RadialDomain
         """
@@ -321,25 +359,15 @@ class Model:
     ):
         """
         Factory method to instantiate a 1D Spherical domain (Spherical coordinates).
-        Automatically incorporates 2/r terms into the gradient and laplacian operators.
-        
-        ANNULAR DOMAINS VS SOLID SPHERES:
-        If `inner_radius == 0.0` (Solid), the framework applies L'Hôpital's rule at the core 
-        to handle the mathematical singularity, enforcing continuous symmetry.
-        If `inner_radius > 0.0` (Hollow), the domain opens up, exposing the inner 
-        wall boundary for user-defined Dirichlet or Neumann conditions.
-
-        IMPORTANT NOTE: This creates only the radial symmetric axis. In process engineering, 
-        angular symmetries are universally assumed for spherical catalytic particles 
-        and droplets, making this 1D symmetry strictly sufficient for most phenomenological cases.
 
         :param str name: Local name of the domain.
         :param Unit unit: Dimensional length unit.
-        :param float radius: Total physical outer radius (from inner_radius to R).
+        :param str description: Physical description.
+        :param float radius: Total physical outer radius.
         :param int n_points: Number of discretization nodes.
         :param str method: Method of discretization. Defaults to 'mol'.
         :param str diff_scheme: Differentiation scheme. Defaults to 'central'.
-        :param float inner_radius: Starting radius for hollow configurations. Defaults to 0.0.
+        :param float inner_radius: Starting radius for hollow configurations.
         :return: The generated SphericalDomain object.
         :rtype: SphericalDomain
         """
@@ -356,7 +384,6 @@ class Model:
     def distributeVariable(self, variable, domain):
         """
         Discretizes the variable along the domain as a Unified Block Tensor.
-        Automatically re-allocates the underlying CasADi vector.
 
         :param Variable variable: The variable to be distributed.
         :param Domain domain: The target discretization domain.
@@ -365,10 +392,20 @@ class Model:
         variable._owner_model_instance = self
         if variable.name not in self.variables:
             self.variables[variable.name] = variable
+        self._propagate_object_upward(variable, "variables")
 
     # =========================================================================
-    # INITIAL & BOUNDARY CONDITIONS (V5 Vector-Safe)
+    # INITIAL & BOUNDARY CONDITIONS
     # =========================================================================
+
+    def fix_variable(self, variable, value):
+        """
+        Explicitly fixes a variable's value by generating a structural equality constraint.
+
+        :param Variable variable: Target variable to be fixed.
+        :param float value: The numerical value to apply.
+        """
+        variable.fix(value)
 
     def setInitialCondition(self, variable, value, location=None):
         """
@@ -379,7 +416,10 @@ class Model:
         :param tuple|slice location: Optional specific node location.
         """
         if not getattr(variable, "is_distributed", False):
-            variable.setValue(value)
+            if hasattr(variable, "setValue"):
+                variable.setValue(value)
+            else:
+                variable.value = value
         else:
             variable.setVectorialInitialCondition(value, location)
 
@@ -388,8 +428,7 @@ class Model:
     ):
         """
         Generates Boundary Conditions safely mapping the flat topological slices
-        directly into the Unified Equation Block. Includes a Node-Claiming system
-        to prevent edge/corner overlapping in 2D/3D domains.
+        directly into the Unified Equation Block.
 
         :param Variable variable: Target distributed variable.
         :param Domain domain: The domain defining the geometry.
@@ -421,7 +460,6 @@ class Model:
         else:
             raise ValueError(f"Unsupported BC type '{bc_type}'.")
 
-        # The overloaded operators in EquationNode automatically yield residual format
         residual = target_expr - value
         unique_name = f"bc_eq_{variable.name}_{boundary_locator}"
 

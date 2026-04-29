@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 
 """
-Benchmark de Planta Acoplada - ANTARES V5
-Simulação de 4 Operações Unitárias (Misturador, 2x CSTR, Splitter) com Loop de Reciclo.
-Validação da resolução Orientada a Equações contra a Solução Analítica.
+Coupled Plant Benchmark - ANTARES V5
+Simulation of 4 Unit Operations (Mixer, 2x CSTR, Splitter) with a Recycle Loop.
+Validates the Equation-Oriented (EO) resolution against the Analytical Solution.
 """
 
 import numpy as np
@@ -13,18 +13,26 @@ from antares.backend.simulator import Simulator
 from antares.core.connection import Connection
 from antares.core.model import Model
 
-# Configurações do Framework
+# Framework Settings
 cfg.VERBOSITY_LEVEL = 1
-cfg.USE_C_CODE_COMPILATION = False  # Roda instantaneamente sem JIT (0D)
+cfg.USE_C_CODE_COMPILATION = False  # Runs instantly without JIT (0D)
 
 # =============================================================================
-# 1. BIBLIOTECA DE OPERAÇÕES UNITÁRIAS (O FRONTEND)
+# 1. UNIT OPERATIONS LIBRARY (THE FRONTEND)
 # =============================================================================
-
 
 class Mixer(Model):
+    """
+    Ideal Fluid Mixer.
+    Combines two inlet flows into a single outlet stream, assuming perfect
+    and instantaneous mixing.
+    """
+
     def __init__(self, name):
-        super().__init__(name, description="Misturador Ideal")
+        """
+        :param str name: Unique identifier for the mixer.
+        """
+        super().__init__(name, description="Ideal Mixer")
         self()
 
     def DeclareVariables(self):
@@ -37,20 +45,28 @@ class Mixer(Model):
         self.C_out = self.createVariable("C_out", "mol/L", exposure_type="algebraic")
 
     def DeclareEquations(self):
-        # Balanço de Massa Global
-        eq_fluxo = self.F_out() - (self.F_in1() + self.F_in2())
-        self.createEquation("balanco_fluxo", expr=eq_fluxo)
+        # Global Mass Balance
+        eq_flow = self.F_out() - (self.F_in1() + self.F_in2())
+        self.createEquation("flow_balance", expr=eq_flow)
 
-        # Balanço por Espécie (Massa)
-        eq_especie = (self.F_out() * self.C_out()) - (
+        # Component Mass Balance
+        eq_species = (self.F_out() * self.C_out()) - (
             self.F_in1() * self.C_in1() + self.F_in2() * self.C_in2()
         )
-        self.createEquation("balanco_especies", expr=eq_especie)
+        self.createEquation("species_balance", expr=eq_species)
 
 
 class CSTR(Model):
+    """
+    Continuous Stirred-Tank Reactor.
+    Models a perfectly mixed tank with a first-order kinetic reaction.
+    """
+
     def __init__(self, name):
-        super().__init__(name, description="Reator Contínuo de Mistura Perfeita")
+        """
+        :param str name: Unique identifier for the reactor.
+        """
+        super().__init__(name, description="Continuous Stirred-Tank Reactor")
         self()
 
     def DeclareVariables(self):
@@ -58,30 +74,38 @@ class CSTR(Model):
         self.C_in = self.createVariable("C_in", "mol/L", exposure_type="algebraic")
         self.F_out = self.createVariable("F_out", "L/min", exposure_type="algebraic")
 
-        # Variável Dinâmica
+        # Dynamic State Variable
         self.C_out = self.createVariable("C_out", "mol/L", exposure_type="differential")
-        self.setInitialCondition(self.C_out, 0.0)  # Inicia vazio (apenas com solvente)
+        self.setInitialCondition(self.C_out, 0.0)  # Starts empty (solvent only)
 
     def DeclareParameters(self):
-        self.V = self.createParameter("V", "L", value=500.0)
-        self.k = self.createParameter("k", "min^-1", value=0.1)
+        self.V = self.createParameter("V", "L", description="Reactor Volume", value=500.0)
+        self.k = self.createParameter("k", "min^-1", description="Kinetic Constant", value=0.1)
 
     def DeclareEquations(self):
-        # Assumindo densidade constante (F_in = F_out)
-        self.createEquation("balanco_fluxo", expr=self.F_out() - self.F_in())
+        # Assuming constant density (F_in = F_out)
+        self.createEquation("flow_balance", expr=self.F_out() - self.F_in())
 
         # V * dC/dt = F_in*C_in - F_out*C_out - k*V*C_out
-        eq_cinetica = (self.V() * self.C_out.Diff()) - (
+        eq_kinetic = (self.V() * self.C_out.Diff()) - (
             self.F_in() * self.C_in()
             - self.F_out() * self.C_out()
             - self.k() * self.V() * self.C_out()
         )
-        self.createEquation("balanco_reacao", expr=eq_cinetica)
+        self.createEquation("reaction_balance", expr=eq_kinetic)
 
 
 class Splitter(Model):
+    """
+    Stream Splitter (Tee).
+    Divides an incoming stream into two outgoing streams with identical compositions.
+    """
+
     def __init__(self, name):
-        super().__init__(name, description="Divisor de Correntes (Tee)")
+        """
+        :param str name: Unique identifier for the splitter.
+        """
+        super().__init__(name, description="Stream Splitter (Tee)")
         self()
 
     def DeclareVariables(self):
@@ -95,26 +119,30 @@ class Splitter(Model):
         self.C_out2 = self.createVariable("C_out2", "mol/L", exposure_type="algebraic")
 
     def DeclareParameters(self):
-        self.R = self.createParameter("R", "", "Fração de Reciclo", value=0.5)
+        self.R = self.createParameter("R", "", description="Recycle Fraction", value=0.5)
 
     def DeclareEquations(self):
-        self.createEquation(
-            "split_fluxo_1", expr=self.F_out1() - (self.R() * self.F_in())
-        )
-        self.createEquation(
-            "split_fluxo_2", expr=self.F_out2() - ((1.0 - self.R()) * self.F_in())
-        )
+        self.createEquation("split_flow_1", expr=self.F_out1() - (self.R() * self.F_in()))
+        self.createEquation("split_flow_2", expr=self.F_out2() - ((1.0 - self.R()) * self.F_in()))
+        
+        # Compositions remain unchanged
         self.createEquation("split_conc_1", expr=self.C_out1() - self.C_in())
         self.createEquation("split_conc_2", expr=self.C_out2() - self.C_in())
 
 
 # =============================================================================
-# 2. A TOPOLOGIA GLOBAL (O MASTER FLOWSHEET)
+# 2. GLOBAL TOPOLOGY (THE MASTER FLOWSHEET)
 # =============================================================================
 
+class PlantBenchmark(Model):
+    """
+    Master Flowsheet assembling the interconnected unit operations.
+    """
 
-class PlantaBenchmark(Model):
     def __init__(self, name):
+        """
+        :param str name: Unique identifier for the master flowsheet.
+        """
         self.mix = Mixer("M1")
         self.R1 = CSTR("R1")
         self.R2 = CSTR("R2")
@@ -123,82 +151,83 @@ class PlantaBenchmark(Model):
         self()
 
     def DeclareEquations(self):
-        # 1. Alimentação Fresca (Forçando a entrada do Misturador)
-        self.createEquation("Alimentacao_F", expr=self.mix.F_in1() - 100.0)
-        self.createEquation("Alimentacao_C", expr=self.mix.C_in1() - 1.0)
+        # 1. Fresh Feed Specification
+        # ENCAPSULATION MAGIC: Using `.fix()` completely hides the residual 
+        # equation logic (DOF closure) from the end-user.
+        self.mix.F_in1.fix(100.0)
+        self.mix.C_in1.fix(1.0)
 
-        # 2. Conexões Topológicas usando a Classe Connection V5
-        # Ligação 1: Mixer -> R1
+        # 2. Topological Connections using V5 Connection Class
+        # Link 1: Mixer -> R1
         Connection("L1_F", self.mix, self.R1, "F_out", "F_in").apply_to(self)
         Connection("L1_C", self.mix, self.R1, "C_out", "C_in").apply_to(self)
 
-        # Ligação 2: R1 -> R2
+        # Link 2: R1 -> R2
         Connection("L2_F", self.R1, self.R2, "F_out", "F_in").apply_to(self)
         Connection("L2_C", self.R1, self.R2, "C_out", "C_in").apply_to(self)
 
-        # Ligação 3: R2 -> Splitter
+        # Link 3: R2 -> Splitter
         Connection("L3_F", self.R2, self.spl, "F_out", "F_in").apply_to(self)
         Connection("L3_C", self.R2, self.spl, "C_out", "C_in").apply_to(self)
 
-        # Ligação 4: O GRANDE DESAFIO - Loop de Reciclo: Splitter -> Mixer
+        # Link 4: THE GREAT CHALLENGE - Recycle Loop: Splitter -> Mixer
         Connection("L_Recycle_F", self.spl, self.mix, "F_out1", "F_in2").apply_to(self)
         Connection("L_Recycle_C", self.spl, self.mix, "C_out1", "C_in2").apply_to(self)
 
 
 # =============================================================================
-# 3. EXECUÇÃO E AUDITORIA
+# 3. EXECUTION AND AUDIT
 # =============================================================================
 
 if __name__ == "__main__":
-    planta = PlantaBenchmark("Complexo_CSTRs")
+    plant = PlantBenchmark("CSTR_Complex")
 
-    print("\n[INIT] Disparando o Motor de Integração DAE (IDAS)...")
-    simulador = Simulator(model=planta)
+    print("\n[INIT] Firing up the DAE Integration Engine (IDAS)...")
+    simulator = Simulator(model=plant)
 
-    # Simulamos 150 minutos (mais que suficiente para a planta atingir o Estado Estacionário)
+    # Simulate 150 minutes (more than enough to reach Steady-State)
     t_span = np.linspace(0, 150, 300)
 
     # -------------------------------------------------------------------------
-    # PREVENÇÃO DE JACOBIANO SINGULAR (Zero-Flow Bilinearity Trap)
-    # Fornecemos "chutes" não-nulos para as variáveis algébricas. Isso garante
-    # que as derivadas dos termos bilineares (Fluxo * Concentração) não zerem
-    # no cálculo das Condições Iniciais Algébricas (calc_ic) no t=0.
+    # SINGULAR JACOBIAN PREVENTION (Zero-Flow Bilinearity Trap)
+    # We provide non-zero initial guesses for the algebraic variables using the
+    # native `.setValue()` method. This guarantees that the derivatives of
+    # bilinear terms (Flow * Concentration) do not collapse to zero during
+    # the Algebraic Initial Conditions (calc_ic) stage at t=0.
     # -------------------------------------------------------------------------
-    chutes_iniciais = {
-        planta.mix.F_out.name: 100.0,
-        planta.R1.F_out.name: 100.0,
-        planta.R2.F_out.name: 100.0,
-        planta.spl.F_out1.name: 50.0,
-        planta.spl.F_out2.name: 50.0,
-        planta.mix.C_out.name: 1.0,
-        planta.R1.F_in.name: 100.0,
-        planta.R2.F_in.name: 100.0,
-    }
+    plant.mix.F_out.setValue(100.0)
+    plant.R1.F_out.setValue(100.0)
+    plant.R2.F_out.setValue(100.0)
+    plant.spl.F_out1.setValue(50.0)
+    plant.spl.F_out2.setValue(50.0)
+    plant.mix.C_out.setValue(1.0)
+    plant.R1.F_in.setValue(100.0)
+    plant.R2.F_in.setValue(100.0)
 
-    resultados = simulador.run(t_span, initial_conditions=chutes_iniciais)
+    results = simulator.run(t_span)
 
     # -------------------------------------------------------------------------
-    # 4. COMPARAÇÃO COM A LITERATURA
+    # 4. LITERATURE COMPARISON
     # -------------------------------------------------------------------------
 
-    # Extraímos a última linha da matriz de resultados (t = 150 min, Steady-State)
-    C1_sim = resultados.get_variable(planta.R1.C_out)[-1]
-    C2_sim = resultados.get_variable(planta.R2.C_out)[-1]
+    # Extract the final row of the results matrix (t = 150 min, Steady-State)
+    C1_sim = results.get_variable(plant.R1.C_out)[-1]
+    C2_sim = results.get_variable(plant.R2.C_out)[-1]
 
-    # Resultados Analíticos Exatos (calculados do balanço global de massa)
+    # Exact Analytical Results (calculated from the global mass balance)
     C1_lit = 0.50 / 0.85
     C2_lit = 0.40 / 0.85
 
-    erro_C1 = abs(C1_sim - C1_lit) / C1_lit * 100.0
-    erro_C2 = abs(C2_sim - C2_lit) / C2_lit * 100.0
+    error_C1 = abs(C1_sim - C1_lit) / C1_lit * 100.0
+    error_C2 = abs(C2_sim - C2_lit) / C2_lit * 100.0
 
     print("\n" + "=" * 60)
-    print("Solução de Reciclo Simultâneo (Sem Tearing / Equation-Oriented)")
+    print("Simultaneous Recycle Solution (Tearing-Free / Equation-Oriented)")
     print("-" * 60)
     print(
-        f"[{planta.R1.name} - C_out] | Analítico: {C1_lit:.6f} | ANTARES: {C1_sim:.6f} | Erro Relativo: {erro_C1:.2e} %"
+        f"[{plant.R1.name} - C_out] | Analytical: {C1_lit:.6f} | ANTARES: {C1_sim:.6f} | Relative Error: {error_C1:.2e} %"
     )
     print(
-        f"[{planta.R2.name} - C_out] | Analítico: {C2_lit:.6f} | ANTARES: {C2_sim:.6f} | Erro Relativo: {erro_C2:.2e} %"
+        f"[{plant.R2.name} - C_out] | Analytical: {C2_lit:.6f} | ANTARES: {C2_sim:.6f} | Relative Error: {error_C2:.2e} %"
     )
     print("=" * 60)

@@ -4,9 +4,9 @@
 Variable Module (V5 Native CasADi Architecture).
 
 This module defines the Variable class for the ANTARES framework.
-In V5, SymPy is completely eradicated. Variables directly instantiate
-CasADi MX symbolic objects, whether lumped (scalar) or distributed (N-Dimensional tensors).
-This guarantees zero-overhead compilation and immediate matrix generation for PDEs.
+V5 leverages direct CasADi MX symbolic objects for both lumped and distributed 
+parameters, ensuring high-performance Jacobian evaluation. It includes 
+full support for topological tensor reshaping required by 1D, 2D, and 3D PDEs.
 """
 
 import casadi as ca
@@ -21,7 +21,6 @@ class Variable(Quantity):
     """
     Represents a mathematical state variable within the ANTARES flowsheet.
     Inherits from Quantity to maintain strict dimensional coherence.
-    In V5, it acts as a direct wrapper for CasADi MX symbolic vectors.
     """
 
     def __init__(
@@ -44,18 +43,9 @@ class Variable(Quantity):
         Instantiates a physical Variable.
 
         :param str name: Unique symbolic identifier.
-        :param Unit units: Physical unit object for dimensional coherence.
-        :param str description: Physical description of the variable.
-        :param bool is_lower_bounded: Flag for active lower bounds in solvers.
-        :param bool is_upper_bounded: Flag for active upper bounds in solvers.
-        :param float lower_bound: Numerical value for the minimum limit.
-        :param float upper_bound: Numerical value for the maximum limit.
-        :param float value: Nominal or initial scalar value.
-        :param bool is_exposed: True if the variable acts as a flowsheet port.
-        :param str exposure_type: DAE classification (e.g., 'differential', 'algebraic').
-        :param str latex_text: LaTeX formatting string for reports.
-        :param str owner_model_name: Name of the parent model.
-        :param Domain domain: Optional spatial domain for immediate distribution.
+        :param Unit units: Physical unit object.
+        :param str description: Physical description.
+        :param float value: Nominal initial value.
         """
         self._raw_units = units
         super().__init__(name, units, description, value, latex_text, owner_model_name)
@@ -67,75 +57,113 @@ class Variable(Quantity):
         self.is_exposed = is_exposed
         self.type = exposure_type
 
-        # Spatial Topology Attributes
+        # Topology and Allocation
         self.is_distributed = False
         self.domain = None
         self.tensor_shape = None
-        self.n_points = 1
-
-        # V5 NATIVE CASADI ALLOCATION (Starts as scalar by default)
-        self.symbolic_object = ca.MX.sym(self.name)
-
-        # Arrays for DAE partitioning and Initial Conditions
         self.mesh_indices = None
-        self.node_types = np.array([self.type], dtype=object)
+        self.n_points = 1
+        
+        # Native CasADi allocation
+        self.symbolic_object = ca.MX.sym(self.name)
         self.initial_condition_array = np.array([value], dtype=float)
+        self.node_types = np.array([self.type], dtype=object)
+
+    def fix(self, value):
+        """
+        Fixes the variable to a constant numerical value by injecting a 
+        structural residual equation into the model hierarchy.
+        
+        This method resolves the abstraction leak by automating the 
+        Degrees of Freedom (DOF) closure. It ensures the specification 
+        is propagated to the root flowsheet regardless of submodel depth.
+
+        :param float value: The numerical value to fix the variable to.
+        :raises RuntimeError: If the variable is not bound to a model instance.
+        """
+        if not hasattr(self, "_owner_model_instance") or self._owner_model_instance is None:
+            raise RuntimeError(
+                f"Variable '{self.name}' is orphaned. It must be created via "
+                "model.createVariable() to support the .fix() method."
+            )
+
+        # 1. Update the Initial Guess (Numerical Stability)
+        if not self.is_distributed:
+            if hasattr(self, "setValue"):
+                self.setValue(value)
+            else:
+                self.value = value
+                self.initial_condition_array[0] = value
+        else:
+            self.setVectorialInitialCondition(value)
+
+        # 2. Generate the residual expression (Var - Value = 0)
+        residual_expr = self() - value
+
+        # 3. Extract pure local name to prevent dictionary overwrite collisions
+        owner_name = self._owner_model_instance.name
+        local_name = self.name
+        suffix = f"_{owner_name}"
+        if local_name.endswith(suffix):
+            local_name = local_name[:-len(suffix)]
+
+        spec_name = f"Spec_{local_name}"
+        desc = f"Fixed specification for {local_name}"
+        
+        # 4. Request the owner model to inject the equation (triggers upward propagation)
+        self._owner_model_instance.createEquation(
+            name=spec_name, 
+            description=desc, 
+            expr=residual_expr
+        )
 
     def distributeOnDomain(self, domain):
         """
-        Maps the variable to a spatial domain as a unified tensorial block.
-        Re-allocates the CasADi symbolic object natively as an N-dimensional vector.
+        Maps the variable to a spatial domain as a unified vector.
+        Preserves the tensor shape to allow multidimensional unrolling (2D/3D).
 
-        :param Domain domain: The target discretization domain.
+        :param Domain domain: The spatial domain to distribute upon.
         """
         self.domain = domain
         self.is_distributed = True
-        self.tensor_shape = getattr(domain, "shape", (domain.n_points,))
+        
+        # Restored Topological Trackers required by the Simulator and Plotter
         self.n_points = domain.n_points
-        self.mesh_indices = domain.get_mesh_indices()
-
-        # V5 VECTORIAL RE-ALLOCATION: The core of the new architecture
-        # Allocates a 1D column vector in C++ representing the entire spatial mesh
+        self.tensor_shape = getattr(domain, "shape", (domain.n_points,))
+        if hasattr(domain, "get_mesh_indices"):
+            self.mesh_indices = domain.get_mesh_indices()
+            
+        # Reallocate the CasADi symbol as a flattened N-dimensional vector
         self.symbolic_object = ca.MX.sym(self.name, self.n_points)
-
-        # Reset DAE topological maps
         self.node_types = np.full(self.n_points, self.type, dtype=object)
         self.initial_condition_array = np.zeros(self.n_points)
 
     def distributeOn(self, domain):
         """
         Syntactic sugar to delegate discretization to the Master Model.
-
-        :param Domain domain: The target discretization domain.
-        :raises RuntimeError: If the variable is not bound to a Model instance.
+        
+        :param Domain domain: The spatial domain.
         """
-        if (
-            hasattr(self, "_owner_model_instance")
-            and self._owner_model_instance is not None
-        ):
+        if hasattr(self, "_owner_model_instance") and self._owner_model_instance:
             self._owner_model_instance.distributeVariable(self, domain)
         else:
-            raise RuntimeError(
-                f"Variable '{self.name}' is orphaned! It must be created via "
-                f"model.createVariable() to be bound to a parent Model instance."
-            )
+            raise RuntimeError(f"Variable '{self.name}' is not bound to a Model.")
 
     def setNodeType(self, indices, new_type):
         """
-        Overrides the DAE classification for a specific subset of the variable.
-        Vital for establishing Algebraic boundaries in Differential fields.
-
-        :param array-like indices: Flat indices of the targeted nodes.
-        :param str new_type: The new DAE type (e.g., 'algebraic').
+        Overrides the DAE classification for a specific subset of nodes.
+        
+        :param list indices: Spatial indices to modify.
+        :param str new_type: New exposure type (e.g., 'algebraic').
         """
         self.node_types[indices] = new_type
 
     def setVectorialInitialCondition(self, value, location=None):
         """
-        Applies initial values to specific topological slices of the block tensor.
-
-        :param float or ndarray value: The initial value to inject.
-        :param location: The topological slice where the value is applied.
+        Applies initial values to specific topological slices.
+        
+        :param float|ndarray value: Value to apply.
+        :param slice|list location: Topological location.
         """
         if location is None or location == "all":
             self.initial_condition_array[:] = value
@@ -145,8 +173,8 @@ class Variable(Quantity):
     def __call__(self):
         """
         Evaluates the variable, returning its EquationNode wrapper.
-
-        :return: A node encapsulating the native CasADi symbol and its units.
+        
+        :return: EquationNode containing the CasADi symbol.
         :rtype: EquationNode
         """
         return EquationNode(
@@ -155,34 +183,29 @@ class Variable(Quantity):
 
     def Diff(self, ind_var=None):
         """
-        Applies the temporal derivative operator.
-        In V5, directly instantiates the companion `_dot` CasADi symbolic vector.
-
-        :param ind_var: Optional independent variable (typically time).
-        :return: An EquationNode representing the temporal derivative vector.
+        Instantiates the temporal derivative CasADi symbolic vector.
+        
+        :param Variable ind_var: The independent variable (e.g., time).
+        :return: EquationNode representing the temporal derivative.
         :rtype: EquationNode
         """
         dim = self.n_points if self.is_distributed else 1
         sym_dot = ca.MX.sym(self.name + "_dot", dim)
-
-        # Delegates physical unit resolution to the native operator
         dummy_diff_node = _Diff(self, ind_var)
-        time_derivative_unit = dummy_diff_node.unit_object
-
         enode = EquationNode(
             name=f"d({self.name})",
             symbolic_object=sym_dot,
-            unit_object=time_derivative_unit,
+            unit_object=dummy_diff_node.unit_object,
         )
         enode.equation_type["is_differential"] = True
         return enode
 
     def Grad(self, domain=None):
         """
-        Delegates spatial gradient matrix multiplication to the Domain.
-
-        :param Domain domain: Optional override for the target domain.
-        :return: An EquationNode representing the spatial gradient.
+        Delegates spatial gradient to the Domain.
+        
+        :param Domain domain: Optional domain override.
+        :return: EquationNode representing the gradient.
         :rtype: EquationNode
         """
         dom = domain if domain else self.domain
@@ -192,10 +215,10 @@ class Variable(Quantity):
 
     def Div(self, domain=None):
         """
-        Delegates spatial Laplacian matrix multiplication to the Domain.
-
-        :param Domain domain: Optional override for the target domain.
-        :return: An EquationNode representing the Laplacian operator.
+        Delegates spatial Laplacian to the Domain.
+        
+        :param Domain domain: Optional domain override.
+        :return: EquationNode representing the Laplacian.
         :rtype: EquationNode
         """
         dom = domain if domain else self.domain
