@@ -2,18 +2,6 @@
 
 """
 Thermodynamic Package Module (V5 Native CasADi Architecture).
-
-Implements the SOLID Strategy pattern. Thermodynamic Packages contain the physics
-and empirical data retrieval logic, while Streams contain the spatial topology.
-These packages dynamically inject variables and complex residual equations
-directly into the Stream's DAE block, preserving native CasADi C++ acceleration.
-
-Supported Models:
-- PureFluidLUT (B-Spline Tables)
-- IdealVLEPackage (Wilson K-Values)
-- PengRobinsonEOS (Rigorous Cubic - Verified Analytic Architecture)
-- SoaveRedlichKwongEOS (Rigorous Cubic - Verified Analytic Architecture)
-- NRTLPackage (Activity Coefficient for highly non-ideal mixtures)
 """
 
 from abc import ABC, abstractmethod
@@ -33,6 +21,15 @@ except ImportError:
     HAS_THERMO = False
 
 
+def leaky_log(x, eps=1e-5):
+    safe_x = ca.fmax(x, eps)
+    return ca.if_else(x > eps, ca.log(safe_x), ca.log(eps) + (1.0 / eps) * (x - eps))
+
+
+def smooth_abs(x, eps=1e-8):
+    return ca.sqrt(x**2 + eps)
+
+
 class PropertyPackage(ABC):
     def __init__(self, components):
         self.components = components
@@ -46,7 +43,6 @@ class PropertyPackage(ABC):
         pass
 
     def _apply_asymmetric_initialization(self, stream_instance):
-        """Forces distinct initial starting points for phase fractions."""
         n = len(self.components)
         if n < 2:
             return
@@ -135,7 +131,8 @@ class IdealVLEPackage(PropertyPackage):
             self.thermo_data[comp] = {
                 "Hf_298": getattr(chem, "Hfgm", 0.0) or 0.0,
                 "Tc": getattr(chem, "Tc", 300.0) or 300.0,
-                "Pc": getattr(chem, "Pc", 1e5) or 1e5,
+                # ARMAZENAMOS DIRETAMENTE EM BAR PARA EVITAR DESPROPORÇÃO
+                "Pc": (getattr(chem, "Pc", 1e5) or 1e5) / 1e5,
                 "omega": getattr(chem, "omega", 0.0) or 0.0,
                 "Hvap_298": getattr(chem, "Hvapm", 30000.0) or 30000.0,
                 "Cp_coeffs": coeffs[:4],
@@ -156,11 +153,12 @@ class IdealVLEPackage(PropertyPackage):
         )
 
         T_safe = ca.fmax(T_mx, 1.0)
-        P_pa = ca.fmax(P_mx * 1e5, 100.0)
+        P_bar = ca.fmax(P_mx, 0.01)
 
         for comp in self.components:
             data = self.thermo_data[comp]
-            K_sym = (data["Pc"] / P_pa) * ca.exp(
+            # Como data["Pc"] já está em Bar, o K_sym fica perfeitamente escalado (O(1))
+            K_sym = (data["Pc"] / P_bar) * ca.exp(
                 5.373 * (1.0 + data["omega"]) * (1.0 - (data["Tc"] / T_safe))
             )
             K_node = EquationNode(
@@ -191,6 +189,7 @@ class IdealVLEPackage(PropertyPackage):
             h_comp = data["Hf_298"] + integral_Cp
             if phase == "liquid":
                 h_comp -= data["Hvap_298"]
+
             z_mx = (
                 fractions_sym_dict[comp].symbolic_object
                 if hasattr(fractions_sym_dict[comp], "symbolic_object")
@@ -204,21 +203,32 @@ class IdealVLEPackage(PropertyPackage):
 
 
 class PengRobinsonEOS(IdealVLEPackage):
+    """Rigorous Equation of State (Peng-Robinson)"""
+
     def build_phase_equilibrium(self, stream_instance):
         self._apply_asymmetric_initialization(stream_instance)
 
         stream_instance.Z_L = stream_instance.createVariable(
-            "Z_L", "", value=0.05, exposure_type="algebraic"
+            "Z_L", "", value=0.15, exposure_type="algebraic"
         )
         stream_instance.Z_V = stream_instance.createVariable(
-            "Z_V", "", value=0.95, exposure_type="algebraic"
+            "Z_V", "", value=0.85, exposure_type="algebraic"
         )
 
-        T_mx = stream_instance.T.symbolic_object
-        P_mx = stream_instance.P.symbolic_object * 1e5
+        T_raw = (
+            stream_instance.T.symbolic_object
+            if hasattr(stream_instance.T, "symbolic_object")
+            else stream_instance.T
+        )
+        P_raw = (
+            stream_instance.P.symbolic_object
+            if hasattr(stream_instance.P, "symbolic_object")
+            else stream_instance.P
+        )
 
-        T_safe = ca.fmax(T_mx, 1.0)
-        P_safe = ca.fmax(P_mx, 100.0)
+        T_safe = ca.fmax(T_raw, 1.0)
+        # O Solver VÊ EM BAR, a Cúbica OPERA EM PASCALS.
+        P_safe_pa = ca.fmax(P_raw * 1e5, 100.0)
         R_gas = 8.314
 
         a_comp, b_comp = [], []
@@ -227,25 +237,35 @@ class PengRobinsonEOS(IdealVLEPackage):
             Tr = T_safe / ca.fmax(data["Tc"], 1.0)
             kappa = 0.37464 + 1.54226 * data["omega"] - 0.26992 * data["omega"] ** 2
             alpha = (1.0 + kappa * (1.0 - ca.sqrt(Tr))) ** 2
-            a_comp.append(0.45724 * (R_gas**2 * data["Tc"] ** 2 / data["Pc"]) * alpha)
-            b_comp.append(0.07780 * (R_gas * data["Tc"] / data["Pc"]))
+            # Lembramos que Pc na base de dados agora está em Bar! Convertendo de volta para Pa aqui.
+            Pc_pa = data["Pc"] * 1e5
+            a_comp.append(0.45724 * (R_gas**2 * data["Tc"] ** 2 / Pc_pa) * alpha)
+            b_comp.append(0.07780 * (R_gas * data["Tc"] / Pc_pa))
 
-        aL, bL, aV, bV = 0.0, 0.0, 0.0, 0.0
-        for i, comp_i in enumerate(self.components):
-            xi = stream_instance.x[comp_i].symbolic_object
-            yi = stream_instance.y[comp_i].symbolic_object
-            bL += xi * b_comp[i]
-            bV += yi * b_comp[i]
-            for j, comp_j in enumerate(self.components):
-                xj = stream_instance.x[comp_j].symbolic_object
-                yj = stream_instance.y[comp_j].symbolic_object
-                aL += xi * xj * ca.sqrt(a_comp[i] * a_comp[j])
-                aV += yi * yj * ca.sqrt(a_comp[i] * a_comp[j])
+        def get_cubic_params(fractions_dict):
+            sum_fracs = ca.fmax(
+                ca.sum1(
+                    ca.vertcat(
+                        *[fractions_dict[c].symbolic_object for c in self.components]
+                    )
+                ),
+                1e-12,
+            )
 
-        A_L = (aL * P_safe) / (R_gas**2 * T_safe**2)
-        B_L = (bL * P_safe) / (R_gas * T_safe)
-        A_V = (aV * P_safe) / (R_gas**2 * T_safe**2)
-        B_V = (bV * P_safe) / (R_gas * T_safe)
+            a_mix, b_mix = 0.0, 0.0
+            for i in range(len(self.components)):
+                xi = fractions_dict[self.components[i]].symbolic_object / sum_fracs
+                b_mix += xi * b_comp[i]
+                for j in range(len(self.components)):
+                    xj = fractions_dict[self.components[j]].symbolic_object / sum_fracs
+                    a_mix += xi * xj * ca.sqrt(a_comp[i] * a_comp[j])
+
+            A_mix = (a_mix * P_safe_pa) / (R_gas**2 * T_safe**2)
+            B_mix = (b_mix * P_safe_pa) / (R_gas * T_safe)
+            return a_mix, b_mix, A_mix, B_mix
+
+        aL, bL, A_L, B_L = get_cubic_params(stream_instance.x)
+        aV, bV, A_V, B_V = get_cubic_params(stream_instance.y)
 
         Z_L = stream_instance.Z_L.symbolic_object
         Z_V = stream_instance.Z_V.symbolic_object
@@ -270,49 +290,56 @@ class PengRobinsonEOS(IdealVLEPackage):
             "EOS_Cubic_Vapor", expr=EquationNode("resV", res_V, Unit("", ""))
         )
 
+        def calc_phi(comp, Z, A, B, b_mix, a_mix, i_idx):
+            bi_b = b_comp[i_idx] / ca.fmax(b_mix, 1e-12)
+            sum_x_aij = 0.0
+            for j in range(len(self.components)):
+                frac = (
+                    stream_instance.x[self.components[j]].symbolic_object
+                    if Z is Z_L
+                    else stream_instance.y[self.components[j]].symbolic_object
+                )
+                sum_x_aij += ca.fmax(frac, 0.0) * ca.sqrt(a_comp[i_idx] * a_comp[j])
+
+            sum_fracs = ca.fmax(
+                ca.sum1(
+                    ca.vertcat(
+                        *[
+                            ca.fmax(
+                                stream_instance.x[c].symbolic_object
+                                if Z is Z_L
+                                else stream_instance.y[c].symbolic_object,
+                                0.0,
+                            )
+                            for c in self.components
+                        ]
+                    )
+                ),
+                1e-12,
+            )
+            term_a = (2.0 * sum_x_aij / (ca.fmax(a_mix, 1e-12) * sum_fracs)) - bi_b
+
+            arg1 = Z - B
+            arg2 = Z + (1.0 + 1.41421356) * B
+            arg3 = Z + (1.0 - 1.41421356) * B
+
+            ln_phi = (
+                bi_b * (Z - 1.0)
+                - leaky_log(arg1)
+                - (A / ca.fmax(2.82842712 * B, 1e-12))
+                * term_a
+                * (leaky_log(arg2) - leaky_log(arg3))
+            )
+            return ca.exp(ca.fmax(ca.fmin(ln_phi, 20.0), -20.0))
+
         for i, comp in enumerate(self.components):
-            bi_b_L = b_comp[i] / ca.fmax(bL, 1e-12)
-            sum_x_aij_L = 0.0
-            for j, comp_j in enumerate(self.components):
-                xj = stream_instance.x[comp_j].symbolic_object
-                sum_x_aij_L += xj * ca.sqrt(a_comp[i] * a_comp[j])
-            term_a_L = (2.0 * sum_x_aij_L / ca.fmax(aL, 1e-12)) - bi_b_L
-
-            arg1_L = ca.fmax(Z_L - B_L, 1e-8)
-            arg2_L = ca.fmax(Z_L + (1.0 + 1.41421356) * B_L, 1e-8)
-            arg3_L = ca.fmax(Z_L + (1.0 - 1.41421356) * B_L, 1e-8)
-            ln_phi_L = (
-                bi_b_L * (Z_L - 1.0)
-                - ca.log(arg1_L)
-                - (A_L / ca.fmax(2.82842712 * B_L, 1e-12))
-                * term_a_L
-                * ca.log(arg2_L / arg3_L)
-            )
-
-            bi_b_V = b_comp[i] / ca.fmax(bV, 1e-12)
-            sum_y_aij_V = 0.0
-            for j, comp_j in enumerate(self.components):
-                yj = stream_instance.y[comp_j].symbolic_object
-                sum_y_aij_V += yj * ca.sqrt(a_comp[i] * a_comp[j])
-            term_a_V = (2.0 * sum_y_aij_V / ca.fmax(aV, 1e-12)) - bi_b_V
-
-            arg1_V = ca.fmax(Z_V - B_V, 1e-8)
-            arg2_V = ca.fmax(Z_V + (1.0 + 1.41421356) * B_V, 1e-8)
-            arg3_V = ca.fmax(Z_V + (1.0 - 1.41421356) * B_V, 1e-8)
-            ln_phi_V = (
-                bi_b_V * (Z_V - 1.0)
-                - ca.log(arg1_V)
-                - (A_V / ca.fmax(2.82842712 * B_V, 1e-12))
-                * term_a_V
-                * ca.log(arg2_V / arg3_V)
-            )
-
-            delta_ln = ca.fmax(ca.fmin(ln_phi_L - ln_phi_V, 25.0), -25.0)
-            K_i = ca.exp(delta_ln)
+            phi_L = calc_phi(comp, Z_L, A_L, B_L, bL, aL, i)
+            phi_V = calc_phi(comp, Z_V, A_V, B_V, bV, aV, i)
 
             x_c = stream_instance.x[comp].symbolic_object
             y_c = stream_instance.y[comp].symbolic_object
 
+            K_i = phi_L / ca.fmax(phi_V, 1e-12)
             stream_instance.createEquation(
                 f"IsoFugacity_{comp}",
                 expr=EquationNode("isoF", y_c - K_i * x_c, Unit("", "")),
@@ -324,17 +351,25 @@ class SoaveRedlichKwongEOS(IdealVLEPackage):
         self._apply_asymmetric_initialization(stream_instance)
 
         stream_instance.Z_L = stream_instance.createVariable(
-            "Z_L", "", value=0.05, exposure_type="algebraic"
+            "Z_L", "", value=0.15, exposure_type="algebraic"
         )
         stream_instance.Z_V = stream_instance.createVariable(
-            "Z_V", "", value=0.95, exposure_type="algebraic"
+            "Z_V", "", value=0.85, exposure_type="algebraic"
         )
 
-        T_mx = stream_instance.T.symbolic_object
-        P_mx = stream_instance.P.symbolic_object * 1e5
+        T_raw = (
+            stream_instance.T.symbolic_object
+            if hasattr(stream_instance.T, "symbolic_object")
+            else stream_instance.T
+        )
+        P_raw = (
+            stream_instance.P.symbolic_object
+            if hasattr(stream_instance.P, "symbolic_object")
+            else stream_instance.P
+        )
 
-        T_safe = ca.fmax(T_mx, 1.0)
-        P_safe = ca.fmax(P_mx, 100.0)
+        T_safe = ca.fmax(T_raw, 1.0)
+        P_safe_pa = ca.fmax(P_raw * 1e5, 100.0)
         R_gas = 8.314
 
         a_comp, b_comp = [], []
@@ -343,25 +378,34 @@ class SoaveRedlichKwongEOS(IdealVLEPackage):
             Tr = T_safe / ca.fmax(data["Tc"], 1.0)
             m = 0.480 + 1.574 * data["omega"] - 0.176 * data["omega"] ** 2
             alpha = (1.0 + m * (1.0 - ca.sqrt(Tr))) ** 2
-            a_comp.append(0.42748 * (R_gas**2 * data["Tc"] ** 2 / data["Pc"]) * alpha)
-            b_comp.append(0.08664 * (R_gas * data["Tc"] / data["Pc"]))
+            Pc_pa = data["Pc"] * 1e5
+            a_comp.append(0.42748 * (R_gas**2 * data["Tc"] ** 2 / Pc_pa) * alpha)
+            b_comp.append(0.08664 * (R_gas * data["Tc"] / Pc_pa))
 
-        aL, bL, aV, bV = 0.0, 0.0, 0.0, 0.0
-        for i, comp_i in enumerate(self.components):
-            xi = stream_instance.x[comp_i].symbolic_object
-            yi = stream_instance.y[comp_i].symbolic_object
-            bL += xi * b_comp[i]
-            bV += yi * b_comp[i]
-            for j, comp_j in enumerate(self.components):
-                xj = stream_instance.x[comp_j].symbolic_object
-                yj = stream_instance.y[comp_j].symbolic_object
-                aL += xi * xj * ca.sqrt(a_comp[i] * a_comp[j])
-                aV += yi * yj * ca.sqrt(a_comp[i] * a_comp[j])
+        def get_cubic_params(fractions_dict):
+            sum_fracs = ca.fmax(
+                ca.sum1(
+                    ca.vertcat(
+                        *[fractions_dict[c].symbolic_object for c in self.components]
+                    )
+                ),
+                1e-12,
+            )
 
-        A_L = (aL * P_safe) / (R_gas**2 * T_safe**2)
-        B_L = (bL * P_safe) / (R_gas * T_safe)
-        A_V = (aV * P_safe) / (R_gas**2 * T_safe**2)
-        B_V = (bV * P_safe) / (R_gas * T_safe)
+            a_mix, b_mix = 0.0, 0.0
+            for i in range(len(self.components)):
+                xi = fractions_dict[self.components[i]].symbolic_object / sum_fracs
+                b_mix += xi * b_comp[i]
+                for j in range(len(self.components)):
+                    xj = fractions_dict[self.components[j]].symbolic_object / sum_fracs
+                    a_mix += xi * xj * ca.sqrt(a_comp[i] * a_comp[j])
+
+            A_mix = (a_mix * P_safe_pa) / (R_gas**2 * T_safe**2)
+            B_mix = (b_mix * P_safe_pa) / (R_gas * T_safe)
+            return a_mix, b_mix, A_mix, B_mix
+
+        aL, bL, A_L, B_L = get_cubic_params(stream_instance.x)
+        aV, bV, A_V, B_V = get_cubic_params(stream_instance.y)
 
         Z_L = stream_instance.Z_L.symbolic_object
         Z_V = stream_instance.Z_V.symbolic_object
@@ -376,43 +420,53 @@ class SoaveRedlichKwongEOS(IdealVLEPackage):
             "EOS_Cubic_Vapor", expr=EquationNode("resV", res_V, Unit("", ""))
         )
 
+        def calc_phi(comp, Z, A, B, b_mix, a_mix, i_idx):
+            bi_b = b_comp[i_idx] / ca.fmax(b_mix, 1e-12)
+            sum_x_aij = 0.0
+            for j in range(len(self.components)):
+                frac = (
+                    stream_instance.x[self.components[j]].symbolic_object
+                    if Z is Z_L
+                    else stream_instance.y[self.components[j]].symbolic_object
+                )
+                sum_x_aij += ca.fmax(frac, 0.0) * ca.sqrt(a_comp[i_idx] * a_comp[j])
+
+            sum_fracs = ca.fmax(
+                ca.sum1(
+                    ca.vertcat(
+                        *[
+                            ca.fmax(
+                                stream_instance.x[c].symbolic_object
+                                if Z is Z_L
+                                else stream_instance.y[c].symbolic_object,
+                                0.0,
+                            )
+                            for c in self.components
+                        ]
+                    )
+                ),
+                1e-12,
+            )
+            term_a = (2.0 * sum_x_aij / (ca.fmax(a_mix, 1e-12) * sum_fracs)) - bi_b
+
+            arg1 = Z - B
+            arg2 = Z + B
+
+            ln_phi = (
+                bi_b * (Z - 1.0)
+                - leaky_log(arg1)
+                - (A / ca.fmax(B, 1e-12)) * term_a * leaky_log(arg2 / ca.fmax(Z, 1e-8))
+            )
+            return ca.exp(ca.fmax(ca.fmin(ln_phi, 20.0), -20.0))
+
         for i, comp in enumerate(self.components):
-            bi_b_L = b_comp[i] / ca.fmax(bL, 1e-12)
-            sum_x_aij_L = 0.0
-            for j, comp_j in enumerate(self.components):
-                xj = stream_instance.x[comp_j].symbolic_object
-                sum_x_aij_L += xj * ca.sqrt(a_comp[i] * a_comp[j])
-            term_a_L = (2.0 * sum_x_aij_L / ca.fmax(aL, 1e-12)) - bi_b_L
-
-            arg1_L = ca.fmax(Z_L - B_L, 1e-8)
-            arg2_L = 1.0 + B_L / ca.fmax(Z_L, 1e-8)
-            ln_phi_L = (
-                bi_b_L * (Z_L - 1.0)
-                - ca.log(arg1_L)
-                - (A_L / ca.fmax(B_L, 1e-12)) * term_a_L * ca.log(arg2_L)
-            )
-
-            bi_b_V = b_comp[i] / ca.fmax(bV, 1e-12)
-            sum_y_aij_V = 0.0
-            for j, comp_j in enumerate(self.components):
-                yj = stream_instance.y[comp_j].symbolic_object
-                sum_y_aij_V += yj * ca.sqrt(a_comp[i] * a_comp[j])
-            term_a_V = (2.0 * sum_y_aij_V / ca.fmax(aV, 1e-12)) - bi_b_V
-
-            arg1_V = ca.fmax(Z_V - B_V, 1e-8)
-            arg2_V = 1.0 + B_V / ca.fmax(Z_V, 1e-8)
-            ln_phi_V = (
-                bi_b_V * (Z_V - 1.0)
-                - ca.log(arg1_V)
-                - (A_V / ca.fmax(B_V, 1e-12)) * term_a_V * ca.log(arg2_V)
-            )
-
-            delta_ln = ca.fmax(ca.fmin(ln_phi_L - ln_phi_V, 25.0), -25.0)
-            K_i = ca.exp(delta_ln)
+            phi_L = calc_phi(comp, Z_L, A_L, B_L, bL, aL, i)
+            phi_V = calc_phi(comp, Z_V, A_V, B_V, bV, aV, i)
 
             x_c = stream_instance.x[comp].symbolic_object
             y_c = stream_instance.y[comp].symbolic_object
 
+            K_i = phi_L / ca.fmax(phi_V, 1e-12)
             stream_instance.createEquation(
                 f"IsoFugacity_{comp}",
                 expr=EquationNode("isoF", y_c - K_i * x_c, Unit("", "")),
@@ -432,25 +486,26 @@ class NRTLPackage(IdealVLEPackage):
 
     def _get_lee_kesler_psat(self, T_mx, comp):
         Tc = self.thermo_data[comp]["Tc"]
-        Pc = self.thermo_data[comp]["Pc"]
+        # Pc da base está em Bar. Transforma para Pascals para Lee-Kesler.
+        Pc_pa = self.thermo_data[comp]["Pc"] * 1e5
         w = self.thermo_data[comp]["omega"]
 
         Tr = T_mx / Tc
         f0 = (
             5.92714
             - 6.09648 / ca.fmax(Tr, 1e-5)
-            - 1.28862 * ca.log(ca.fmax(Tr, 1e-5))
+            - 1.28862 * leaky_log(Tr)
             + 0.169347 * Tr**6
         )
         f1 = (
             15.2518
             - 15.6875 / ca.fmax(Tr, 1e-5)
-            - 13.4721 * ca.log(ca.fmax(Tr, 1e-5))
+            - 13.4721 * leaky_log(Tr)
             + 0.43577 * Tr**6
         )
 
         ln_Pr_sat = f0 + w * f1
-        return Pc * ca.exp(ca.fmax(ca.fmin(ln_Pr_sat, 50.0), -50.0))
+        return Pc_pa * ca.exp(ca.fmax(ca.fmin(ln_Pr_sat, 50.0), -50.0))
 
     def build_phase_equilibrium(self, stream_instance):
         self._apply_asymmetric_initialization(stream_instance)
@@ -474,9 +529,7 @@ class NRTLPackage(IdealVLEPackage):
         for i in range(n):
             for j in range(n):
                 tau[i, j] = self.tau_matrix[i, j]
-                G[i, j] = ca.exp(
-                    ca.fmax(ca.fmin(-self.alpha_matrix[i, j] * tau[i, j], 50.0), -50.0)
-                )
+                G[i, j] = ca.exp(-self.alpha_matrix[i, j] * tau[i, j])
 
         x_vec = ca.vertcat(
             *[stream_instance.x[c].symbolic_object for c in self.components]

@@ -64,6 +64,9 @@ KEEP_TEMPORARY_COMPILATION_FILES = False
 DEFAULT_RELATIVE_TOLERANCE = 1e-6
 DEFAULT_ABSOLUTE_TOLERANCE = 1e-8
 
+# Debug flag for extra verbosity for the rootfinder solver
+ROOTFINDER_SOLVER_DEBUG_LEVEL = 0
+
 # =============================================================================
 # 3. VERBOSITY & DEBUGGING
 # =============================================================================

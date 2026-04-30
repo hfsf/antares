@@ -2,14 +2,7 @@
 
 """
 Thermodynamic EO Benchmark - ANTARES V5
-Validates the Dependency Injection (Strategy Pattern) of Thermodynamic Packages.
-
-Scenario (High-Pressure Wide-Boiling Mixture):
-1. A gas-like stream (Methane/Propane) mixes with a liquid-like stream (Pentane).
-2. The mixture is flashed at High Pressure (25 bar) and 310 K.
-3. At these conditions, Methane is supercritical and the gas is highly non-ideal.
-   The Ideal VLE assumption will fail drastically against literature/rigorous data,
-   proving the necessity of the Peng-Robinson and SRK formulations.
+Validates the Dependency Injection of Thermodynamic Packages progressively.
 """
 
 import numpy as np
@@ -25,14 +18,29 @@ from antares.core.thermo_package import (
     SoaveRedlichKwongEOS,
 )
 
-# Framework Settings
-cfg.VERBOSITY_LEVEL = 0  # Desativado para um output de benchmark limpo
+# =============================================================================
+# [⚙️] PAINEL DE CONTROLO DO BENCHMARK
+# =============================================================================
+
+# COMPLEXITY_LEVEL (1, 2, ou 3)
+# Nível 1: Apenas Flash Mássico Isotérmico (Graus de liberdade fechados na alimentação)
+# Nível 2: Flash Isotérmico + Balanço de Entalpia (Testa a Escala Numérica O(1e5))
+# Nível 3: O Fluxograma Completo (Misturador + Flash + Entalpia)
+COMPLEXITY_LEVEL = 3
+
+# SELEÇÃO DE MODELOS TERMODINÂMICOS
+TEST_IDEAL = True
+TEST_PR = True
+TEST_SRK = True
+
+# =============================================================================
+
+# Variáveis derivadas baseadas no Nível de Complexidade
+ENABLE_MIXER = COMPLEXITY_LEVEL == 3
+ENABLE_ENERGY_BALANCE = COMPLEXITY_LEVEL >= 2
+
+cfg.VERBOSITY_LEVEL = 0
 cfg.USE_C_CODE_COMPILATION = False
-
-
-# =============================================================================
-# 1. UNIT OPERATIONS LIBRARY (THE FRONTEND)
-# =============================================================================
 
 
 class Mixer(Model):
@@ -50,16 +58,6 @@ class Mixer(Model):
     def DeclareEquations(self):
         self.createEquation("eq_P1", expr=self.in1.P() - self.out.P())
         self.createEquation("eq_P2", expr=self.in2.P() - self.out.P())
-
-        self.createEquation(
-            "eq_Energy",
-            expr=(self.out.H_molar() * self.out.F_molar())
-            - (
-                self.in1.H_molar() * self.in1.F_molar()
-                + self.in2.H_molar() * self.in2.F_molar()
-            ),
-        )
-
         self.createEquation(
             "eq_F_total",
             expr=self.out.F_molar() - (self.in1.F_molar() + self.in2.F_molar()),
@@ -73,6 +71,19 @@ class Mixer(Model):
             mass_out = self.out.z[comp]() * self.out.F_molar()
             self.createEquation(f"eq_mass_{comp}", expr=mass_out - mass_in)
 
+        if ENABLE_ENERGY_BALANCE:
+            # SCALING DIAGNÓSTICO (O Leaky Abstraction temporário)
+            eq_energy_expr = (
+                (self.out.H_molar() * self.out.F_molar())
+                - (
+                    self.in1.H_molar() * self.in1.F_molar()
+                    + self.in2.H_molar() * self.in2.F_molar()
+                )
+            ) / 1e5
+            self.createEquation("eq_Energy", expr=eq_energy_expr)
+        else:
+            self.createEquation("eq_T_iso", expr=self.out.T() - self.in1.T())
+
 
 class FlashDrum(Model):
     def __init__(self, name, property_package):
@@ -84,12 +95,12 @@ class FlashDrum(Model):
         self.inlet = MaterialStream("inlet", self.pkg)
         self.vap_out = MaterialStream("vap_out", self.pkg)
         self.liq_out = MaterialStream("liq_out", self.pkg)
-        self.heat_port = EnergyStream("heat_port", "heat")
-
         self.vle_core = TwoPhaseStream("vle_core", self.pkg)
-        self.submodels.extend(
-            [self.inlet, self.vap_out, self.liq_out, self.heat_port, self.vle_core]
-        )
+        self.submodels.extend([self.inlet, self.vap_out, self.liq_out, self.vle_core])
+
+        if ENABLE_ENERGY_BALANCE:
+            self.heat_port = EnergyStream("heat_port", "heat")
+            self.submodels.append(self.heat_port)
 
     def DeclareEquations(self):
         self.createEquation(
@@ -125,19 +136,15 @@ class FlashDrum(Model):
                 f"liq_x_{comp}", expr=self.liq_out.z[comp]() - self.vle_core.x[comp]()
             )
 
-        self.createEquation(
-            "drum_energy",
-            expr=self.heat_port.Q()
-            - (
-                self.vle_core.H_molar() * self.vle_core.F_molar()
-                - self.inlet.H_molar() * self.inlet.F_molar()
-            ),
-        )
-
-
-# =============================================================================
-# 2. GLOBAL TOPOLOGY (THE MASTER FLOWSHEET)
-# =============================================================================
+        if ENABLE_ENERGY_BALANCE:
+            drum_energy_expr = (
+                self.heat_port.Q()
+                - (
+                    self.vle_core.H_molar() * self.vle_core.F_molar()
+                    - self.inlet.H_molar() * self.inlet.F_molar()
+                )
+            ) / 1e5
+            self.createEquation("drum_energy", expr=drum_energy_expr)
 
 
 class ProcessFlowsheet(Model):
@@ -147,132 +154,238 @@ class ProcessFlowsheet(Model):
         super().__init__(name)
         self()
 
+    def _map_streams(self, name_prefix, src, dest):
+        """
+        Mapeamento Topológico Estrito (Bypass da classe Connection).
+        Mapeia apenas as variáveis independentes, prevenindo a duplicação
+        de equações de fecho (Enthalpy_Closure e Fractions_Sum) no Jacobiano.
+        """
+        self.createEquation(f"{name_prefix}_T", expr=dest.T() - src.T())
+        self.createEquation(f"{name_prefix}_P", expr=dest.P() - src.P())
+        self.createEquation(f"{name_prefix}_F", expr=dest.F_molar() - src.F_molar())
+
+        # Mapeia apenas N-1 componentes!
+        for comp in self.pkg.components[:-1]:
+            self.createEquation(
+                f"{name_prefix}_z_{comp}", expr=dest.z[comp]() - src.z[comp]()
+            )
+
     def DeclareVariables(self):
-        self.feed1 = MaterialStream("feed1", self.pkg)
-        self.feed2 = MaterialStream("feed2", self.pkg)
-        self.mixer = Mixer("mixer", self.pkg)
         self.flash = FlashDrum("flash", self.pkg)
+        self.submodels.append(self.flash)
 
-        self.submodels.extend([self.feed1, self.feed2, self.mixer, self.flash])
+        if ENABLE_MIXER:
+            self.feed1 = MaterialStream("feed1", self.pkg)
+            self.feed2 = MaterialStream("feed2", self.pkg)
+            self.mixer = Mixer("mixer", self.pkg)
+            self.submodels.extend([self.feed1, self.feed2, self.mixer])
+            all_streams = [
+                self.feed1,
+                self.feed2,
+                self.mixer.in1,
+                self.mixer.in2,
+                self.mixer.out,
+                self.flash.inlet,
+                self.flash.vap_out,
+                self.flash.liq_out,
+                self.flash.vle_core,
+            ]
+        else:
+            self.feed = MaterialStream("feed", self.pkg)
+            self.submodels.append(self.feed)
+            all_streams = [
+                self.feed,
+                self.flash.inlet,
+                self.flash.vap_out,
+                self.flash.liq_out,
+                self.flash.vle_core,
+            ]
 
-        for stream in [
-            self.feed1,
-            self.feed2,
-            self.mixer.in1,
-            self.mixer.in2,
-            self.mixer.out,
-            self.flash.inlet,
-            self.flash.vap_out,
-            self.flash.liq_out,
-            self.flash.vle_core,
-        ]:
+        # Reset Térmico e de Pressão base
+        for stream in all_streams:
             stream.T.setValue(310.0)
             stream.P.setValue(25.0)
-            stream.F_molar.setValue(50.0)
+
+        # =====================================================================
+        # INICIALIZAÇÃO TOPOLÓGICA CONSISTENTE (Evita a Armadilha Bilinear)
+        # =====================================================================
+        if ENABLE_MIXER:
+            # Fluxos
+            self.feed1.F_molar.setValue(60.0)
+            self.mixer.in1.F_molar.setValue(60.0)
+            self.feed2.F_molar.setValue(40.0)
+            self.mixer.in2.F_molar.setValue(40.0)
+            self.mixer.out.F_molar.setValue(100.0)
+            self.flash.inlet.F_molar.setValue(100.0)
+
+            # Composições
+            z1 = {"methane": 0.70, "propane": 0.30, "pentane": 0.00}
+            z2 = {"methane": 0.00, "propane": 0.20, "pentane": 0.80}
+            zm = {"methane": 0.42, "propane": 0.26, "pentane": 0.32}
+
+            for comp in self.pkg.components:
+                self.feed1.z[comp].setValue(z1[comp])
+                self.mixer.in1.z[comp].setValue(z1[comp])
+                self.feed2.z[comp].setValue(z2[comp])
+                self.mixer.in2.z[comp].setValue(z2[comp])
+                self.mixer.out.z[comp].setValue(zm[comp])
+                self.flash.inlet.z[comp].setValue(zm[comp])
+                self.flash.vle_core.z[comp].setValue(zm[comp])
+        else:
+            self.feed.F_molar.setValue(100.0)
+            self.flash.inlet.F_molar.setValue(100.0)
+
+            zm = {"methane": 0.42, "propane": 0.26, "pentane": 0.32}
+            for comp in self.pkg.components:
+                self.feed.z[comp].setValue(zm[comp])
+                self.flash.inlet.z[comp].setValue(zm[comp])
+                self.flash.vle_core.z[comp].setValue(zm[comp])
+
+        # Chute Assimétrico para o Flash Drum
+        chute_x = {"methane": 0.10, "propane": 0.25, "pentane": 0.65}
+        chute_y = {"methane": 0.75, "propane": 0.20, "pentane": 0.05}
 
         for comp in self.pkg.components:
-            self.flash.vle_core.x[comp].setValue(0.1)
-            self.flash.vle_core.y[comp].setValue(0.9)
-            self.flash.vap_out.z[comp].setValue(0.9)
-            self.flash.liq_out.z[comp].setValue(0.1)
+            self.flash.vle_core.x[comp].setValue(chute_x[comp])
+            self.flash.vle_core.y[comp].setValue(chute_y[comp])
+            self.flash.vap_out.z[comp].setValue(chute_y[comp])
+            self.flash.liq_out.z[comp].setValue(chute_x[comp])
 
     def DeclareEquations(self):
-        self.feed1.T.fix(310.0)
-        self.feed1.P.fix(25.0)
-        self.feed1.F_molar.fix(60.0)
-        self.feed1.z["methane"].fix(0.70)
-        self.feed1.z["propane"].fix(0.30)
+        if ENABLE_MIXER:
+            self.feed1.T.fix(310.0)
+            self.feed1.P.fix(25.0)
+            self.feed1.F_molar.fix(60.0)
+            self.feed1.z["methane"].fix(0.70)
+            self.feed1.z["propane"].fix(0.30)
 
-        self.feed2.T.fix(310.0)
-        self.feed2.F_molar.fix(40.0)
-        self.feed2.z["methane"].fix(0.0)
-        self.feed2.z["propane"].fix(0.20)
+            self.feed2.T.fix(310.0)
+            self.feed2.F_molar.fix(40.0)
+            self.feed2.z["methane"].fix(0.0)
+            self.feed2.z["propane"].fix(0.20)
+
+            # Uso do Mapeamento Estrito no lugar das Connections!
+            self._map_streams("C1", self.feed1, self.mixer.in1)
+            self._map_streams("C2", self.feed2, self.mixer.in2)
+            self._map_streams("C3", self.mixer.out, self.flash.inlet)
+        else:
+            self.feed.T.fix(310.0)
+            self.feed.P.fix(25.0)
+            self.feed.F_molar.fix(100.0)
+            self.feed.z["methane"].fix(0.42)
+            self.feed.z["propane"].fix(0.26)
+
+            self._map_streams("C1", self.feed, self.flash.inlet)
 
         self.createEquation("spec_flash_T", expr=self.flash.vle_core.T() - 310.0)
-        self.createEquation("spec_heat_T", expr=self.flash.heat_port.T_source() - 350.0)
 
-        Connection("C1", self.feed1, self.mixer.in1).apply_to(self)
-        Connection("C2", self.feed2, self.mixer.in2).apply_to(self)
-        Connection("C3", self.mixer.out, self.flash.inlet).apply_to(self)
+        if ENABLE_ENERGY_BALANCE:
+            self.createEquation(
+                "spec_heat_T", expr=self.flash.heat_port.T_source() - 350.0
+            )
 
 
 # =============================================================================
-# 3. LITERATURE/RIGOROUS REFERENCE DATA
+# 4. TABELA DE DADOS RIGOROSOS DA LITERATURA
 # =============================================================================
-# Fixed physical data for Methane(42%)/Propane(26%)/n-Pentane(32%) @ 310 K, 25 bar
 LITERATURE_REFERENCE = {
-    "V_frac": 0.4532,  # Fator de vaporização real (não-ideal)
-    "y_methane": 0.8654,  # Metano dissolve menos no vapor real do que no ideal
-    "x_pentane": 0.5312,  # Concentração de pentano na fase líquida real
+    "V_frac": 0.4532,  # Fator K do Metano puxa o vapor, mas C5 retém o líquido
+    "y_methane": 0.8654,  # Metano altamente volátil
+    "x_pentane": 0.5312,  # Pentano domina a fase líquida
 }
 
+
 # =============================================================================
-# 4. BENCHMARK EXECUTION
+# 5. EXECUÇÃO DO BENCHMARK
 # =============================================================================
 
 
 def run_scenario(pkg_class):
     plant = ProcessFlowsheet("Benchmark", pkg_class)
     sim = Simulator(plant)
-    results = sim.run(t_span=[0, 1])
 
-    V_frac = results.get_variable(plant.flash.vle_core.V_frac)[-1]
-    y_methane = results.get_variable(plant.flash.vap_out.z["methane"])[-1]
-    x_pentane = results.get_variable(plant.flash.liq_out.z["pentane"])[-1]
-
-    return V_frac, y_methane, x_pentane
+    try:
+        results = sim.run(t_span=[0, 1])
+        V_frac = results.get_variable(plant.flash.vle_core.V_frac)[-1]
+        y_methane = results.get_variable(plant.flash.vap_out.z["methane"])[-1]
+        x_pentane = results.get_variable(plant.flash.liq_out.z["pentane"])[-1]
+        return V_frac, y_methane, x_pentane
+    except Exception as e:
+        print(f"[{pkg_class.__name__} FALHOU: {str(e)[:60]}...]")
+        return None, None, None
 
 
 if __name__ == "__main__":
     print("\n" + "=" * 70)
     print(" ANTARES V5 - HIGH-PRESSURE THERMODYNAMIC BENCHMARK")
-    print(" Mistura: Metano / Propano / n-Pentano @ 25 bar, 310 K")
+    print(f" C1/C3/n-C5 @ 25 bar, 310 K | Nível de Complexidade: {COMPLEXITY_LEVEL}")
     print("=" * 70)
 
-    print("\n[1/3] Resolvendo Matriz com VLE Ideal (Wilson Extrapolado)...")
-    v_ideal, yM_id, xP_id = run_scenario(IdealVLEPackage)
+    v_ideal, yM_id, xP_id = None, None, None
+    v_pr, yM_pr, xP_pr = None, None, None
+    v_srk, yM_srk, xP_srk = None, None, None
 
-    print("[2/3] Resolvendo Matriz com Peng-Robinson EOS (Rigoroso)...")
-    v_pr, yM_pr, xP_pr = run_scenario(PengRobinsonEOS)
+    if TEST_IDEAL:
+        print("\n[1/3] Resolvendo Matriz com VLE Ideal (Wilson Extrapolado)...")
+        v_ideal, yM_id, xP_id = run_scenario(IdealVLEPackage)
 
-    # print("[3/3] Resolvendo Matriz com Soave-Redlich-Kwong EOS (Rigoroso)...")
-    # v_srk, yM_srk, xP_srk = run_scenario(SoaveRedlichKwongEOS)
+    if TEST_PR:
+        print("[2/3] Resolvendo Matriz com Peng-Robinson EOS (Rigoroso)...")
+        v_pr, yM_pr, xP_pr = run_scenario(PengRobinsonEOS)
+
+    if TEST_SRK:
+        print("[3/3] Resolvendo Matriz com Soave-Redlich-Kwong EOS (Rigoroso)...")
+        v_srk, yM_srk, xP_srk = run_scenario(SoaveRedlichKwongEOS)
 
     print("\n" + "=" * 70)
-    print(" RESULTADOS: FRAÇÃO VAPORIZADA (V/F) @ 310 K, 25 BAR")
+    print(" COMPARAÇÃO COM LITERATURA: FRAÇÃO VAPORIZADA (V/F)")
     print("=" * 70)
     ref_v = LITERATURE_REFERENCE["V_frac"]
-    print(f" Reference Target (Rigorous) : {ref_v:.6f}")
-    print(
-        f" ANTARES IdealVLE Package  : {v_ideal:.6f}  -> Erro Físico: {abs(v_ideal - ref_v) / ref_v * 100:.2f} %"
-    )
-    print("-" * 70)
-    print(
-        f" ANTARES Peng-Robinson EOS : {v_pr:.6f}  -> Erro Físico: {abs(v_pr - ref_v) / ref_v * 100:.2f} %"
-    )
-    # print(f" ANTARES SRK EOS           : {v_srk:.6f}  -> Erro Físico: {abs(v_srk - ref_v) / ref_v * 100:.2f} %")
+    print(f" Literatura (Rigorous Data)  : {ref_v:.4f}")
+    if v_ideal is not None:
+        print(
+            f" ANTARES IdealVLE Package    : {v_ideal:.4f}  -> Erro: {abs(v_ideal - ref_v) / ref_v * 100:>6.2f} %"
+        )
+    if v_pr is not None:
+        print(
+            f" ANTARES Peng-Robinson EOS   : {v_pr:.4f}  -> Erro: {abs(v_pr - ref_v) / ref_v * 100:>6.2f} %"
+        )
+    if v_srk is not None:
+        print(
+            f" ANTARES SRK EOS             : {v_srk:.4f}  -> Erro: {abs(v_srk - ref_v) / ref_v * 100:>6.2f} %"
+        )
 
     print("\n" + "=" * 70)
-    print(" RESULTADOS: COMPOSIÇÕES DE FASE (Frações Molares)")
+    print(" COMPARAÇÃO COM LITERATURA: COMPOSIÇÕES DE FASE (Molares)")
     print("=" * 70)
 
     ref_ym = LITERATURE_REFERENCE["y_methane"]
     print(f" [Metano no Vapor, y1] -> Altamente Supercrítico (Alvo: {ref_ym:.4f})")
-    print(
-        f"  Previsão Ideal           : {yM_id:.6f}  -> Erro Físico: {abs(yM_id - ref_ym) / ref_ym * 100:.2f} %"
-    )
-    print(
-        f"  Realidade Peng-Robinson  : {yM_pr:.6f}  -> Erro Físico: {abs(yM_pr - ref_ym) / ref_ym * 100:.2f} %"
-    )
-    # print(f"  Realidade SRK            : {yM_srk:.6f}  -> Erro Físico: {abs(yM_srk - ref_ym) / ref_ym * 100:.2f} %")
+    if yM_id is not None:
+        print(
+            f"  Previsão Ideal             : {yM_id:.4f}  -> Erro: {abs(yM_id - ref_ym) / ref_ym * 100:>6.2f} %"
+        )
+    if yM_pr is not None:
+        print(
+            f"  ANTARES Peng-Robinson      : {yM_pr:.4f}  -> Erro: {abs(yM_pr - ref_ym) / ref_ym * 100:>6.2f} %"
+        )
+    if yM_srk is not None:
+        print(
+            f"  ANTARES SRK                : {yM_srk:.4f}  -> Erro: {abs(yM_srk - ref_ym) / ref_ym * 100:>6.2f} %"
+        )
 
     ref_xp = LITERATURE_REFERENCE["x_pentane"]
     print(f"\n [n-Pentano no Líquido, x3] -> Componente Pesado (Alvo: {ref_xp:.4f})")
-    print(
-        f"  Previsão Ideal           : {xP_id:.6f}  -> Erro Físico: {abs(xP_id - ref_xp) / ref_xp * 100:.2f} %"
-    )
-    print(
-        f"  Realidade Peng-Robinson  : {xP_pr:.6f}  -> Erro Físico: {abs(xP_pr - ref_xp) / ref_xp * 100:.2f} %"
-    )
-    # print(f"  Realidade SRK            : {xP_srk:.6f}  -> Erro Físico: {abs(xP_srk - ref_xp) / ref_xp * 100:.2f} %")
+    if xP_id is not None:
+        print(
+            f"  Previsão Ideal             : {xP_id:.4f}  -> Erro: {abs(xP_id - ref_xp) / ref_xp * 100:>6.2f} %"
+        )
+    if xP_pr is not None:
+        print(
+            f"  ANTARES Peng-Robinson      : {xP_pr:.4f}  -> Erro: {abs(xP_pr - ref_xp) / ref_xp * 100:>6.2f} %"
+        )
+    if xP_srk is not None:
+        print(
+            f"  ANTARES SRK                : {xP_srk:.4f}  -> Erro: {abs(xP_srk - ref_xp) / ref_xp * 100:>6.2f} %"
+        )
     print("=" * 70 + "\n")
