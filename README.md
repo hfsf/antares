@@ -38,7 +38,7 @@ The architecture is being laid out to support advanced numerical methodologies i
 
 ## Current Status
 
-⚠️ **Alpha Version (v0.1.0a)**
+⚠️ **Alpha Version (v0.3.0a)**
 
 Project ANTARES is currently in a highly fluid, architectural development phase. While the core mathematical engine is functional, the API is experimental and subject to profound changes without notice. It is primarily a general-purpose research tool and is **not yet mature enough for production environments or external contributions.**
 
