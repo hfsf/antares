@@ -64,6 +64,21 @@ KEEP_TEMPORARY_COMPILATION_FILES = False
 DEFAULT_RELATIVE_TOLERANCE = 1e-6
 DEFAULT_ABSOLUTE_TOLERANCE = 1e-8
 
+# Debug flag for extra verbosity for the rootfinder solver
+ROOTFINDER_SOLVER_DEBUG_LEVEL = 0
+
+# Default solver for Steady-State Rootfinding.
+# 'kinsol' uses Newton-Raphson (Fast but blind to physical bounds).
+# 'ipopt' uses Interior Point NLP (Extremely robust, respects thermodynamics bounds).
+DEFAULT_STEADY_SOLVER = "ipopt"
+
+# If True, the NLP solver will strictly enforce Variable lower/upper bounds.
+USE_BOUNDS_IN_STEADY_STATE = True
+
+# IPOPT Specific Tolerances
+IPOPT_TOL = 1e-8
+IPOPT_CONSTR_VIOL_TOL = 1e-8
+
 # =============================================================================
 # 3. VERBOSITY & DEBUGGING
 # =============================================================================
@@ -85,7 +100,15 @@ STRICT_MODE = False
 SHOW_LOADING_BARS = True
 
 # =============================================================================
-# 4. PLOTTING & AESTHETICS
+# 4. DOF ANALYSIS CONFIGURATION
+# =============================================================================
+# 0 = Silent (No report)
+# 1 = Topology Summary (Shows contributions per Submodel/Equipment)
+# 2 = Deep Incidence Analysis (Shows exact Variable-Equation mapping and orphans)
+VERBOSITY_OF_DOF_ANALYSIS = 2
+
+# =============================================================================
+# 5. PLOTTING & AESTHETICS
 # =============================================================================
 
 # Defines if the framework should use Seaborn to style the plots natively.

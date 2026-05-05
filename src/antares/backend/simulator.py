@@ -5,14 +5,14 @@ Simulator Module (V5 Native CasADi Architecture).
 
 Defines the Simulator class for the ANTARES framework.
 This module receives the phenomenological model, triggers the native C++
-DAE Assembler, and orchestrates the numerical resolution using CasADi's 
-high-performance SUNDIALS integrators and rootfinders.
+DAE Assembler, and orchestrates the numerical resolution using CasADi's
+high-performance SUNDIALS integrators and NLP solvers.
 
 It features a Smart Dispatcher that introspects the mathematical structure
 of the formulated system. If a purely algebraic topology is detected, it
-automatically bypasses dynamic integration and resolves the steady-state 
-roots, propagating the result over the requested timespan to ensure API continuity
-without requiring dummy differential states.
+automatically bypasses dynamic integration and resolves the steady-state
+roots using either a classic Rootfinder (KINSOL) or a robust Non-Linear
+Programming solver (IPOPT) with strict physical bound enforcement.
 """
 
 import glob
@@ -37,7 +37,7 @@ class Simulator:
     Orchestrates the numerical resolution of the mathematical model.
     Bridges the declarative Model abstractions with the high-performance
     CasADi backend. Supports both dynamic integration (IDAS) and steady-state
-    resolution (KINSOL) of native C++ block-vectorized graphs.
+    resolution (KINSOL/IPOPT) of native C++ block-vectorized graphs.
     """
 
     def __init__(self, model, solver_type=None, check_dof=None):
@@ -54,6 +54,8 @@ class Simulator:
             if solver_type is not None
             else getattr(cfg, "DEFAULT_INTEGRATOR", "idas")
         )
+        
+        self.steady_solver_name = getattr(cfg, "DEFAULT_STEADY_SOLVER", "ipopt").lower()
 
         # In V5, the Transpiler acts as a pure DAE Assembler
         self.transpiler = CasadiTranspiler(model)
@@ -100,6 +102,7 @@ class Simulator:
         """
         Validates the mathematical closure of the assembled DAE system.
         Compares the total number of variables against the total number of equations.
+        Delegates the deep hierarchical and incidence analysis to the model object.
 
         :raises DegreesOfFreedomError: If the system is not mathematically closed (DOF != 0).
         """
@@ -125,6 +128,13 @@ class Simulator:
             if dof == 0:
                 print("  -> Status: System is mathematically closed. OK!\n")
 
+        # =====================================================================
+        # DEEP INCIDENCE ANALYSIS TRIGGER
+        # Instructs the declarative model to perform variable-by-variable tracing
+        # =====================================================================
+        if hasattr(self.model, "print_dof_report"):
+            self.model.print_dof_report()
+
         if dof != 0:
             msg = (
                 f"\n[ANTARES MATHEMATICAL KERNEL] Degrees of Freedom Violation!\n"
@@ -149,8 +159,7 @@ class Simulator:
             if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
                 print(
                     "\n[ANTARES WARNING] The iterative linear solver plugin ('gmres') is missing from your "
-                    "CasADi distribution. Safely falling back to the 'csparse' direct solver, "
-                    "which is highly optimized for N-Dimensional sparse matrices.\n"
+                    "CasADi distribution. Safely falling back to the 'csparse' direct solver.\n"
                 )
             return "csparse"
         elif req == "direct":
@@ -158,11 +167,35 @@ class Simulator:
 
         return req
 
+    def _sanitize_time_span(self, t_span):
+        """
+        Provides API robustness by automatically coercing user time-span inputs 
+        (scalars, tuples, numpy arrays) into the strict Python List of floats.
+
+        :param any t_span: The arbitrary user input for the integration time grid.
+        :return: A standardized 1D list of floats representing the time steps.
+        :rtype: list
+        :raises TypeError: If the input cannot be interpreted as a numerical time grid.
+        """
+        if isinstance(t_span, (int, float)):
+            return [0.0, float(t_span)]
+        
+        if isinstance(t_span, np.ndarray):
+            return t_span.astype(float).tolist()
+            
+        if isinstance(t_span, (list, tuple)):
+            return [float(t) for t in t_span]
+            
+        raise TypeError(
+            f"Invalid format for t_span: {type(t_span)}. "
+            "Please provide a numerical list, tuple, NumPy array, or a single final time scalar."
+        )
+
     def _compile_integrator(self, t_span, use_c_code=False, linear_solver="direct"):
         """
         Compiles the CasADi dynamic integrator (e.g., IDAS) utilizing the assembled DAE structure.
 
-        :param array-like t_span: 1D array of time points for the integration.
+        :param list t_span: Standardized 1D list of time points for the integration.
         :param bool use_c_code: Flag to trigger native C code JIT compilation.
         :param str linear_solver: The target linear solver strategy.
         """
@@ -172,50 +205,43 @@ class Simulator:
 
             opts["linear_solver"] = self._resolve_linear_solver(linear_solver)
 
+            clean_dae = {
+                k: v for k, v in self.dae_structure.items() 
+                if k in ["x", "z", "p", "ode", "alg"]
+            }
+
             if use_c_code:
                 opts["jit"] = True
                 opts["compiler"] = "shell"
-                if (
-                    getattr(cfg, "C_COMPILATION_OPTIMIZATION_LEVEL", "basic")
-                    == "aggressive"
-                ):
+                
+                # CORRECT FIX: Instruct CasADi Function compiler to bypass internal cleanup
+                opts["jit_cleanup"] = False
+                
+                if getattr(cfg, "C_COMPILATION_OPTIMIZATION_LEVEL", "basic") == "aggressive":
                     opts["jit_options"] = {"flags": ["-O3", "-ffast-math"]}
                 else:
                     opts["jit_options"] = {"flags": ["-O1", "-pipe"]}
                 try:
                     self._integrator = ca.integrator(
-                        self._compilation_prefixes[0],
-                        self.solver_type,
-                        self.dae_structure,
-                        t0,
-                        t_span,
-                        opts,
+                        self._compilation_prefixes[0], self.solver_type, clean_dae, t0, t_span, opts
                     )
                 except Exception:
                     opts["jit"] = False
                     self._integrator = ca.integrator(
-                        self._compilation_prefixes[0],
-                        self.solver_type,
-                        self.dae_structure,
-                        t0,
-                        t_span,
-                        opts,
+                        self._compilation_prefixes[0], self.solver_type, clean_dae, t0, t_span, opts
                     )
             else:
                 self._integrator = ca.integrator(
-                    self._compilation_prefixes[0],
-                    self.solver_type,
-                    self.dae_structure,
-                    t0,
-                    t_span,
-                    opts,
+                    self._compilation_prefixes[0], self.solver_type, clean_dae, t0, t_span, opts
                 )
 
             self._last_t_span = t_span
 
     def _compile_rootfinder(self, use_c_code=False, linear_solver="direct"):
         """
-        Compiles the CasADi rootfinder (e.g., KINSOL) for steady-state resolution.
+        Compiles the Steady-State engine. Branches between standard Rootfinders (KINSOL)
+        and Non-Linear Programming solvers (IPOPT) based on GLOBAL_CFG settings.
+        IPOPT is highly recommended for highly non-linear EOS to strictly enforce bounds.
 
         :param bool use_c_code: Flag to trigger native C code JIT compilation.
         :param str linear_solver: The target linear solver strategy.
@@ -238,28 +264,69 @@ class Simulator:
             eqs = ca.vertcat(*eq_vars) if eq_vars else ca.MX()
 
             p = dae["p"] if "p" in dae and dae["p"].size1() > 0 else ca.MX()
-            problem = {"x": v, "p": p, "g": eqs}
+            
+            # =================================================================
+            # BRANCH: NLP Solver (IPOPT) vs Rootfinder (KINSOL)
+            # =================================================================
+            if self.steady_solver_name == "ipopt":
+                # IPOPT requires an objective function. We formulate a dummy (0) objective
+                # to strictly solve the equality constraints g(x) = 0.
+                problem = {"x": v, "p": p, "g": eqs, "f": 0.0}
+                
+                opts = {
+                    "ipopt.tol": getattr(cfg, "IPOPT_TOL", 1e-8),
+                    "ipopt.constr_viol_tol": getattr(cfg, "IPOPT_CONSTR_VIOL_TOL", 1e-8),
+                }
+                
+                debug_lvl = getattr(cfg, "ROOTFINDER_SOLVER_DEBUG_LEVEL", 0)
+                opts["ipopt.print_level"] = 5 if debug_lvl >= 1 else 0
+                opts["print_time"] = True if debug_lvl >= 1 else False
 
-            opts = {"abstol": getattr(cfg, "DEFAULT_ABSOLUTE_TOLERANCE", 1e-8)}
-            opts["linear_solver"] = self._resolve_linear_solver(linear_solver)
+                req_ls = self._resolve_linear_solver(linear_solver)
+                if req_ls == "csparse":
+                    # CasADi's IPOPT defaults to MUMPS for direct solving.
+                    opts["ipopt.linear_solver"] = "mumps"
 
-            if use_c_code:
-                opts["jit"] = True
-                opts["compiler"] = "shell"
-                opts["jit_options"] = {"flags": ["-O1", "-pipe"]}
-                try:
-                    self._rootfinder = ca.rootfinder(
-                        self._compilation_prefixes[1], "kinsol", problem, opts
-                    )
-                except Exception:
-                    opts["jit"] = False
-                    self._rootfinder = ca.rootfinder(
-                        self._compilation_prefixes[1], "kinsol", problem, opts
-                    )
+                if use_c_code:
+                    opts["jit"] = True
+                    opts["compiler"] = "shell"
+                    opts["jit_options"] = {"flags": ["-O1", "-pipe"]}
+                    
+                    # CORRECT FIX: Instruct CasADi Function compiler to bypass internal cleanup
+                    opts["jit_cleanup"] = False
+                    
+                    try:
+                        self._rootfinder = ca.nlpsol(self._compilation_prefixes[1], "ipopt", problem, opts)
+                    except Exception:
+                        opts["jit"] = False
+                        self._rootfinder = ca.nlpsol(self._compilation_prefixes[1], "ipopt", problem, opts)
+                else:
+                    self._rootfinder = ca.nlpsol(self._compilation_prefixes[1], "ipopt", problem, opts)
+
             else:
-                self._rootfinder = ca.rootfinder(
-                    self._compilation_prefixes[1], "kinsol", problem, opts
-                )
+                # KINSOL Standard Formulation
+                problem = {"x": v, "p": p, "g": eqs}
+                opts = {"abstol": getattr(cfg, "DEFAULT_ABSOLUTE_TOLERANCE", 1e-8)}
+                opts["linear_solver"] = self._resolve_linear_solver(linear_solver)
+
+                if getattr(cfg, "ROOTFINDER_SOLVER_DEBUG_LEVEL", 0) >= 3:
+                    opts["print_level"] = 3
+
+                if use_c_code:
+                    opts["jit"] = True
+                    opts["compiler"] = "shell"
+                    opts["jit_options"] = {"flags": ["-O1", "-pipe"]}
+                    
+                    # CORRECT FIX: Instruct CasADi Function compiler to bypass internal cleanup
+                    opts["jit_cleanup"] = False
+                    
+                    try:
+                        self._rootfinder = ca.rootfinder(self._compilation_prefixes[1], "kinsol", problem, opts)
+                    except Exception:
+                        opts["jit"] = False
+                        self._rootfinder = ca.rootfinder(self._compilation_prefixes[1], "kinsol", problem, opts)
+                else:
+                    self._rootfinder = ca.rootfinder(self._compilation_prefixes[1], "kinsol", problem, opts)
 
     def _get_initial_vector(self, input_dict, category="differential"):
         """
@@ -269,7 +336,6 @@ class Simulator:
         :param str category: Type of variables to extract ('differential' or 'algebraic').
         :return: Ordered list containing the numerical initial values.
         :rtype: list
-        :raises AbsentRequiredObjectError: If a differential variable lacks an initial condition.
         """
         vec = []
         for var_name, var_obj in self.model.variables.items():
@@ -292,6 +358,57 @@ class Simulator:
                             )
                     else:
                         vec.append(var_obj.value)
+        return vec
+
+    def _get_lower_bounds_vector(self, category="algebraic"):
+        """
+        Extracts the explicit mathematical lower bounds for the variable vector.
+        Crucial for NLP solvers (IPOPT) to avoid crossing thermodynamically
+        impossible barriers (e.g., Negative Temperatures, Negative Molar Fractions).
+
+        :param str category: Type of variables to extract ('differential' or 'algebraic').
+        :return: Ordered list containing the numerical lower bounds.
+        :rtype: list
+        """
+        use_bounds = getattr(cfg, "USE_BOUNDS_IN_STEADY_STATE", True)
+        vec = []
+        for var_name, var_obj in self.model.variables.items():
+            # Determine the scalar bound logic
+            has_lb = getattr(var_obj, "is_lower_bounded", False)
+            lb_val = var_obj.lower_bound if (use_bounds and has_lb and var_obj.lower_bound is not None) else -ca.inf
+            
+            if getattr(var_obj, "is_distributed", False):
+                if category == "differential" and var_obj.idx_diff:
+                    vec.extend([lb_val] * len(var_obj.idx_diff))
+                elif category == "algebraic" and var_obj.idx_alg:
+                    vec.extend([lb_val] * len(var_obj.idx_alg))
+            else:
+                if var_obj.type == category:
+                    vec.append(lb_val)
+        return vec
+
+    def _get_upper_bounds_vector(self, category="algebraic"):
+        """
+        Extracts the explicit mathematical upper bounds for the variable vector.
+
+        :param str category: Type of variables to extract ('differential' or 'algebraic').
+        :return: Ordered list containing the numerical upper bounds.
+        :rtype: list
+        """
+        use_bounds = getattr(cfg, "USE_BOUNDS_IN_STEADY_STATE", True)
+        vec = []
+        for var_name, var_obj in self.model.variables.items():
+            has_ub = getattr(var_obj, "is_upper_bounded", False)
+            ub_val = var_obj.upper_bound if (use_bounds and has_ub and var_obj.upper_bound is not None) else ca.inf
+            
+            if getattr(var_obj, "is_distributed", False):
+                if category == "differential" and var_obj.idx_diff:
+                    vec.extend([ub_val] * len(var_obj.idx_diff))
+                elif category == "algebraic" and var_obj.idx_alg:
+                    vec.extend([ub_val] * len(var_obj.idx_alg))
+            else:
+                if var_obj.type == category:
+                    vec.append(ub_val)
         return vec
 
     def _get_parameter_vector(self, p_dict):
@@ -345,14 +462,13 @@ class Simulator:
     ):
         """
         Executes the resolution of the assembled DAE system over the specified time span.
-        
-        Features a Smart Dispatcher algorithm: If the model is completely algebraic 
-        (zero differential states), it automatically intercepts the execution, bypasses 
-        the dynamic integrator (IDAS), and utilizes the Rootfinder (KINSOL). The steady-state 
-        solution is then dynamically propagated over the specified `t_span` to mimic temporal
-        continuity without relying on numerical dummy-hacks.
 
-        :param array-like t_span: 1D array of time points for integration.
+        Features a Smart Dispatcher algorithm: If the model is completely algebraic
+        (zero differential states), it automatically intercepts the execution, bypasses
+        the dynamic integrator (IDAS), and utilizes the chosen Steady-State Solver.
+        The solution is dynamically propagated over `t_span`.
+
+        :param any t_span: The integration time array.
         :param dict initial_conditions: Explicit mapping of variable names to initial values.
         :param dict parameters_dict: Explicit mapping of parameter names to specific values.
         :param bool use_c_code: Overrides the global JIT compilation setting.
@@ -360,6 +476,7 @@ class Simulator:
         :return: A container holding the integrated temporal trajectories.
         :rtype: Results
         """
+        clean_t_span = self._sanitize_time_span(t_span)
         n_x = self.dae_structure["x"].size1() if "x" in self.dae_structure else 0
 
         # =====================================================================
@@ -368,8 +485,8 @@ class Simulator:
         if n_x == 0:
             if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
                 print("\n[SMART DISPATCHER] No differential variables detected (nx = 0).")
-                print("Intercepting dynamic integration and routing directly to KINSOL Rootfinder...")
-            
+                print(f"Intercepting dynamic integration and routing directly to {self.steady_solver_name.upper()}...")
+
             do_c_code = use_c_code if use_c_code is not None else getattr(cfg, "USE_C_CODE_COMPILATION", False)
             do_lin_sol = linear_solver if linear_solver is not None else getattr(cfg, "DEFAULT_LINEAR_SOLVER", "direct")
 
@@ -380,8 +497,39 @@ class Simulator:
 
             z0_vec = self._get_initial_vector(ig_dict, category="algebraic")
             p_vec = self._get_parameter_vector(p_dict)
+            
+            # NLP Boundary constraints
+            lbz = self._get_lower_bounds_vector(category="algebraic")
+            ubz = self._get_upper_bounds_vector(category="algebraic")
 
-            res = self._rootfinder(x0=z0_vec, p=p_vec)
+            if getattr(cfg, "ROOTFINDER_SOLVER_DEBUG_LEVEL", 0) >= 3 and self.steady_solver_name == "kinsol":
+                print("\n" + "=" * 70)
+                print(" DIAGNÓSTICO DE RESÍDUOS (t=0) ANTES DO KINSOL ")
+                print("=" * 70)
+                try:
+                    v_sym = self.dae_structure["z"]
+                    p_sym = self.dae_structure["p"] if "p" in self.dae_structure else ca.MX()
+                    g_sym = self.dae_structure["alg"]
+                    calc_res = ca.Function("calc_res", [v_sym, p_sym], [g_sym])
+                    residuos = calc_res(z0_vec, p_vec).full().flatten()
+
+                    print("Vetor de Resíduos Iniciais F(x0):")
+                    for i, valor in enumerate(residuos):
+                        if np.isnan(valor) or abs(valor) > 1000:
+                            print(f" -> Eq [{i}]: {valor: .6e}  <---")
+                        else:
+                            print(f"    Eq [{i}]: {valor: .6e}")
+                except Exception as e:
+                    print(f"Falha ao avaliar resíduos: {e}")
+                print("=" * 70 + "\n")
+
+            # Execute the selected Steady-State engine
+            if self.steady_solver_name == "ipopt":
+                # lbg=0, ubg=0 forces the equality constraint g(x) = 0
+                res = self._rootfinder(x0=z0_vec, p=p_vec, lbg=0.0, ubg=0.0, lbx=lbz, ubx=ubz)
+            else:
+                res = self._rootfinder(x0=z0_vec, p=p_vec)
+                
             z_sol = res["x"].full().flatten()
 
             results_container = Results(
@@ -390,38 +538,29 @@ class Simulator:
             )
             x_names, z_names = self._generate_names_list()
 
-            # Broadcast the steady-state solution across the entire requested time span
-            n_t = len(t_span)
+            n_t = len(clean_t_span)
             x_res = np.empty((n_t, 0))
             z_res = np.tile(z_sol, (n_t, 1))
 
-            results_container.load_from_simulator(t_span, x_res, z_res, x_names, z_names)
+            results_container.load_from_simulator(clean_t_span, x_res, z_res, x_names, z_names)
 
             if do_c_code:
                 self._cleanup_compilation_files()
             if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
                 print("Steady-State roots evaluated and propagated over the timespan successfully!\n")
-            
+
             return results_container
 
         # =====================================================================
         # STANDARD EXECUTION: Dynamic DAE Integration (nx > 0)
         # =====================================================================
-        do_c_code = (
-            use_c_code
-            if use_c_code is not None
-            else getattr(cfg, "USE_C_CODE_COMPILATION", False)
-        )
-        do_lin_sol = (
-            linear_solver
-            if linear_solver is not None
-            else getattr(cfg, "DEFAULT_LINEAR_SOLVER", "direct")
-        )
+        do_c_code = use_c_code if use_c_code is not None else getattr(cfg, "USE_C_CODE_COMPILATION", False)
+        do_lin_sol = linear_solver if linear_solver is not None else getattr(cfg, "DEFAULT_LINEAR_SOLVER", "direct")
 
         ic_dict = initial_conditions if initial_conditions is not None else {}
         p_dict = parameters_dict if parameters_dict is not None else {}
 
-        self._compile_integrator(t_span, use_c_code=do_c_code, linear_solver=do_lin_sol)
+        self._compile_integrator(clean_t_span, use_c_code=do_c_code, linear_solver=do_lin_sol)
 
         x0_vec = self._get_initial_vector(ic_dict, category="differential")
         z0_vec = self._get_initial_vector(ic_dict, category="algebraic")
@@ -442,13 +581,13 @@ class Simulator:
         )
         x_names, z_names = self._generate_names_list()
 
-        results_container.load_from_simulator(t_span, x_res, z_res, x_names, z_names)
+        results_container.load_from_simulator(clean_t_span, x_res, z_res, x_names, z_names)
 
         if do_c_code:
             self._cleanup_compilation_files()
         if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
             print("Dynamic Simulation successfully completed!")
-        
+
         return results_container
 
     def run_steady_state(
@@ -460,7 +599,7 @@ class Simulator:
     ):
         """
         Executes an explicit steady-state resolution (Rootfinding) of the assembled DAE system.
-        Derivatives of any existent dynamic variables are internally zeroed, and all constraints 
+        Derivatives of any existent dynamic variables are internally zeroed, and all constraints
         are treated as an algebraic rootfinding problem.
 
         :param dict initial_guesses: Explicit mapping of variable names to initial numerical guesses.
@@ -470,16 +609,8 @@ class Simulator:
         :return: A container holding the steady-state solution vector at an arbitrary t=0.
         :rtype: Results
         """
-        do_c_code = (
-            use_c_code
-            if use_c_code is not None
-            else getattr(cfg, "USE_C_CODE_COMPILATION", False)
-        )
-        do_lin_sol = (
-            linear_solver
-            if linear_solver is not None
-            else getattr(cfg, "DEFAULT_LINEAR_SOLVER", "direct")
-        )
+        do_c_code = use_c_code if use_c_code is not None else getattr(cfg, "USE_C_CODE_COMPILATION", False)
+        do_lin_sol = linear_solver if linear_solver is not None else getattr(cfg, "DEFAULT_LINEAR_SOLVER", "direct")
 
         ig_dict = initial_guesses if initial_guesses is not None else {}
         p_dict = parameters_dict if parameters_dict is not None else {}
@@ -494,10 +625,22 @@ class Simulator:
             v0_vec.extend(x0_vec)
         if z0_vec:
             v0_vec.extend(z0_vec)
+            
+        lbx = self._get_lower_bounds_vector(category="differential")
+        lbz = self._get_lower_bounds_vector(category="algebraic")
+        lbv = lbx + lbz
+        
+        ubx = self._get_upper_bounds_vector(category="differential")
+        ubz = self._get_upper_bounds_vector(category="algebraic")
+        ubv = ubx + ubz
 
         p_vec = self._get_parameter_vector(p_dict)
 
-        res = self._rootfinder(x0=v0_vec, p=p_vec)
+        # Execute the selected Steady-State engine
+        if self.steady_solver_name == "ipopt":
+            res = self._rootfinder(x0=v0_vec, p=p_vec, lbg=0.0, ubg=0.0, lbx=lbv, ubx=ubv)
+        else:
+            res = self._rootfinder(x0=v0_vec, p=p_vec)
 
         v_sol = res["x"].full().flatten()
         n_x = len(x0_vec)
@@ -520,5 +663,5 @@ class Simulator:
             self._cleanup_compilation_files()
         if getattr(cfg, "VERBOSITY_LEVEL", 1) >= 1:
             print("Steady-State solution successfully found!")
-        
+
         return results_container

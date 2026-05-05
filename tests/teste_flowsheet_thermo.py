@@ -22,8 +22,8 @@ from antares.backend.simulator import Simulator
 from antares.core.connection import Connection
 from antares.core.expression_evaluation import EquationNode
 from antares.core.model import Model
-from antares.core.stream import EnergyStream, MaterialStream
-from antares.core.thermo_package import PengRobinsonEOS, PureFluidLUT
+from antares.library.streams import EnergyStream, MaterialStream
+from antares.library.thermo_package import PengRobinsonEOS, PureFluidLUT
 from antares.core.unit import Unit
 from antares.plotter import Plotter
 

@@ -34,13 +34,13 @@ class Equation:
     holding the native CasADi computational graph.
     """
 
-    def __init__(self, name, description="", fast_expr=None, owner_model_name=""):
+    def __init__(self, name, description="", expression=None, owner_model_name=""):
         """
         Initializes the Equation object.
 
         :param str name: Name of the equation. If empty, a unique ID is assigned.
         :param str description: Short physical description of the equation.
-        :param fast_expr: The mathematical expression (EquationNode or Tuple).
+        :param expression: The mathematical expression (EquationNode or Tuple).
         :param str owner_model_name: The name of the model that owns this equation.
         """
         self.name = name if name != "" else f"eq_{_generate_unique_id()}"
@@ -57,8 +57,8 @@ class Equation:
         self.is_distributed = False
         self.flat_indices = None
 
-        if fast_expr is not None:
-            self.setResidual(fast_expr)
+        if expression is not None:
+            self.setResidual(expression)
 
     def _getTypeFromExpression(self):
         """

@@ -15,6 +15,8 @@ from antares.core.model import Model
 from antares.core.template_units import m, s
 from antares.plotter import Plotter
 
+PLOT_GRAPH = False
+
 # Criando unidades compostas
 m2 = m**2
 m3 = m**3
@@ -96,11 +98,12 @@ if __name__ == "__main__":
     var_T1 = processo.T1.h.name
     var_T2 = processo.T2.h.name
 
-    plotador.plot(
-        variables=[var_T1, var_T2],
-        title="Dinâmica dos Tanques em Série",
-        xlabel="Tempo Decorrido (s)",
-        ylabel="Altura do Fluido (m)",
-        legend_labels={var_T1: "Tanque de Alimentação", var_T2: "Tanque de Retenção"},
-        show=True
-    )
+    if PLOT_GRAPH:
+        plotador.plot(
+            variables=[var_T1, var_T2],
+            title="Dinâmica dos Tanques em Série",
+            xlabel="Tempo Decorrido (s)",
+            ylabel="Altura do Fluido (m)",
+            legend_labels={var_T1: "Tanque de Alimentação", var_T2: "Tanque de Retenção"},
+            show=True
+        )

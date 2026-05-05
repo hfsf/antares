@@ -219,6 +219,93 @@ class Plotter:
             plt.show()
         return ax
 
+    def plot_variables(
+        self,
+        variables,
+        title=None,
+        xlabel=None,
+        ylabel=None,
+        legend_labels=None,
+        show=True,
+        save_path=None,
+        **kwargs,
+    ):
+        """
+        Plots temporal dynamics by directly accepting ANTARES Variable objects.
+        This prevents abstraction leakage and completely bypasses string-name 
+        collisions in the underlying DataFrame by utilizing the robust 
+        `Results.get_variable()` extractor.
+
+        :param list variables: List of ANTARES Variable objects (0D).
+        :param str title: Plot title.
+        :param str xlabel: Custom X-axis label.
+        :param str ylabel: Custom Y-axis label.
+        :param list legend_labels: List of custom string labels for the legend.
+        :param bool show: Whether to render the plot interactively.
+        :param str save_path: System path to export the figure.
+        :return: The generated matplotlib axis object.
+        :rtype: matplotlib.axes.Axes
+        """
+        self._apply_aesthetics()
+        import pandas as pd
+
+        plot_dict = {}
+        for i, var_obj in enumerate(variables):
+            # Safe Object-Oriented Extraction
+            data = self.results.get_variable(var_obj)
+            
+            # Label resolution strategy
+            if legend_labels and i < len(legend_labels):
+                label = legend_labels[i]
+            else:
+                label = getattr(var_obj, "description", var_obj.name)
+
+            plot_dict[label] = data
+
+        df_to_plot = pd.DataFrame(plot_dict, index=self.results.history.index)
+
+        # AUTO STEADY-STATE DETECTION
+        if df_to_plot.shape[0] == 1:
+            kwargs.setdefault("marker", getattr(cfg, "PLOT_MARKER", "o"))
+            kwargs.setdefault("linestyle", "none")
+            kwargs.setdefault("markersize", getattr(cfg, "PLOT_MARKERSIZE", 8))
+
+        figsize = kwargs.pop("figsize", getattr(cfg, "PLOT_FIGSIZE", (10, 6)))
+        linewidth = kwargs.pop("linewidth", getattr(cfg, "PLOT_LINEWIDTH", 2.5))
+
+        ax = df_to_plot.plot(figsize=figsize, linewidth=linewidth, **kwargs)
+
+        y_min, y_max = ax.get_ylim()
+        margin = (y_max - y_min) * 0.05
+        margin = margin if margin > 0 else (y_max * 0.05 if y_max != 0 else 0.1)
+        ax.set_ylim(y_min - margin, y_max + margin)
+
+        ax.set_title(
+            title if title else f"Simulation Results: {self.results.name}",
+            fontsize=14, fontweight="bold", pad=15,
+        )
+
+        indep_var = self.results.history.index.name
+        ax.set_xlabel(
+            xlabel if xlabel else f"{indep_var if indep_var else 'Time'} ({self.results.time_units})",
+            fontsize=12,
+        )
+        if ylabel:
+            ax.set_ylabel(ylabel, fontsize=12)
+
+        if not getattr(cfg, "USE_SEABORN_STYLE", True):
+            ax.grid(True, linestyle="--", alpha=0.7)
+
+        ax.legend(fontsize=11, loc="best", frameon=True)
+        import matplotlib.pyplot as plt
+        plt.tight_layout()
+
+        if save_path:
+            plt.savefig(save_path, dpi=getattr(cfg, "PLOT_DPI", 300), bbox_inches="tight")
+        if show:
+            plt.show()
+        return ax
+
     def plot_spatial(
         self,
         variables,
